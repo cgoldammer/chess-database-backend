@@ -1,0 +1,6 @@
+*.sw*
+.stack*/
+site_key*
+cookies.txt
+log/
+
