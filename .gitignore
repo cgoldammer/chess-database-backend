@@ -3,4 +3,9 @@
 site_key*
 cookies.txt
 log/
+private_notes.md
+MonadCatchIO-transformers/
+schema.txt
+private_notes.md
+snaplets/
 
