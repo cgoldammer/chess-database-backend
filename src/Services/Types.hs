@@ -13,34 +13,43 @@
 
 module Services.Types where
 
-import           Snap.Snaplet.PostgresqlSimple
-import           Database.PostgreSQL.Simple.Time
+import Database.PostgreSQL.Simple.Time
 import Data.Time
-import           Control.Monad.IO.Class  (liftIO)
-import           Database.Persist
-import           Database.Persist.Postgresql
-import           Database.Persist.TH
+import Control.Monad.IO.Class  (liftIO)
+import Database.Persist
+import Database.Persist.Postgresql
+import Database.Persist.TH
 
 
 share [mkPersist sqlSettings, mkMigrate "migrateAll"] [persistLowerCase|
 Game json
   databaseId DatabaseId
+  playerWhiteId PlayerId
+  playerBlackId PlayerId
   pgn String
+
 Database json
   name String
   UniqueDatabaseName name
+
 GameAttribute json
   gameId GameId
   attribute String
   value String
-ImportantMove json
+
+MoveEval json
   gameId GameId
   moveNumber Int
   isWhite Bool
-  move String
-  eval String
-  isBlunder Bool
-  isBest Bool
+  movePlayed String Maybe
+  moveBest String
+  eval Int Maybe
+  mate Int Maybe
+
+Player json
+  firstName String
+  lastName String
+
 AppUser json
   userId Int
   name String Maybe

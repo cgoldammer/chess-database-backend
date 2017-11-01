@@ -1,0 +1,113 @@
+Name:                backend
+Version:             0.1
+Description:         Provides the snap backend for the chess web app
+License:             AllRightsReserved
+Author:              Chris Goldammer
+Maintainer:          goldammer.christian@gmail.com
+Stability:           Experimental
+Category:            Web
+Build-type:          Simple
+cabal-version:       >=1.10
+
+library
+  hs-source-dirs:      src
+  exposed-modules: Services.Types
+  build-depends:
+    base                      >= 4     && < 5,
+    bytestring                >= 0.9.1 && < 0.11,
+    time,
+    persistent,
+    persistent-postgresql,
+    postgresql-simple,
+    persistent-template
+
+Executable app
+  hs-source-dirs: src
+  default-language: Haskell2010
+  other-modules:     Application, Services.Service, Services.Types
+  build-depends:
+    base                      >= 4     && < 5,
+    bytestring                >= 0.9.1 && < 0.11,
+    monad-control             >= 1.0   && < 1.1,
+    mtl,
+    snap                      >= 1.0,
+    snap-core                 >= 1.0   && < 1.1,
+    snap-server               >= 1.0   && < 1.1,
+    lens,
+    comonad,
+    lens-tutorial,
+    aeson,
+    text,
+    postgresql-simple,
+    time,
+    heist,
+    map-syntax,
+    string-conversions,
+    snap,
+    parsec,
+    containers,
+    persistent,
+    persistent-template,
+    persistent-postgresql,
+    servant-snap,
+    snaplet-persistent,
+    snaplet-postgresql-simple == 1.0.1,
+    servant,
+    esqueleto,
+    resourcet,
+    conduit,
+    raw-strings-qq
+  main-is: Main.hs
+
+
+Executable fill_db
+  hs-source-dirs: test
+  main-is: FillDB.hs
+  other-modules: Helpers
+  default-language: Haskell2010
+  build-depends:
+      base
+    , backend
+    , monad-logger
+    , chess
+    , persistent
+    , persistent-template
+    , persistent-postgresql
+    , time
+    , text
+    , bytestring                >= 0.9.1 && < 0.11
+    , postgresql-simple
+    , resourcet
+    , transformers
+    , snaplet-persistent
+
+Executable test
+  hs-source-dirs: test
+  main-is: BareTest.hs
+  default-language: Haskell2010
+  build-depends:
+      base
+    , backend
+    , HUnit
+    , turtle
+    , directory
+    , time
+    , text
+                
+  ghc-options:         -threaded -rtsopts -with-rtsopts=-N
+  default-language:    Haskell2010
+
+
+  if impl(ghc >= 6.12.0)
+    ghc-options: -threaded -Wall -fwarn-tabs -funbox-strict-fields -O2
+                 -fno-warn-unused-do-bind
+  else
+    ghc-options: -threaded -Wall -fwarn-tabs -funbox-strict-fields -O2
+
+Executable temp
+  hs-source-dirs: test
+  main-is: Temp.hs
+  default-language: Haskell2010
+  build-depends:
+      base
+

@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -14,10 +15,12 @@
 {-# LANGUAGE PolyKinds         #-}
 {-# LANGUAGE TypeFamilies      #-}
 {-# LANGUAGE TypeOperators     #-}
+{-# LANGUAGE DeriveGeneric, DeriveAnyClass #-}
 
 
 module Services.Service where
 
+import GHC.Generics (Generic)
 import qualified Control.Lens as Lens
 import Control.Monad.State.Class as SC
 import Data.Aeson
@@ -46,6 +49,11 @@ import Data.Maybe
 import Data.Proxy (Proxy(..))
 import qualified Data.Time.Clock as C
 import Services.Types
+import qualified Data.Map as M
+import Data.Conduit
+import qualified Data.Conduit.List as CL
+import Data.List as L
+import Text.RawString.QQ
 
 
 data Service = Service {
@@ -73,7 +81,8 @@ chessApi :: Proxy (LevelApi (Handler b Service))
 chessApi = Proxy
 
 type LevelApi m = 
-        "user" :> Get '[JSON] (Maybe AppUser)
+       "user"     :> Get '[JSON] (Maybe AppUser) 
+  :<|> "blunders" :> Get '[JSON] ImportantResult
 
 currentUserName :: SnapletLens b (AuthManager b) -> Handler b Service (Maybe (T.Text))
 currentUserName auth = do
@@ -85,8 +94,76 @@ currentUserName auth = do
 getCurrentUserName :: Maybe AuthUser -> Maybe T.Text
 getCurrentUserName a = fmap userLogin a
 
+data ImpMove = ImpMove { impMove :: String, impBest :: String, impWhite :: String, impBlack :: String, impMoveEval :: String, impBestEval :: String } deriving (Generic, FromJSON, ToJSON)
+
+-- The api returns a list of `ImpMove`s for each database (a string)
+type ImportantResult = M.Map String [ImpMove] 
+
+sql = [r|
+SELECT 'test' as db, move, best, white, black, evalMove, evalBest
+FROM game
+JOIN (
+  SELECT game_id, move as move, eval as evalMove 
+  FROM important_move 
+  WHERE is_blunder
+) move 
+ON game.id = move.game_id
+JOIN (
+  SELECT game_id, move as best, eval as evalBest from important_move 
+  WHERE is_best
+) moveBest
+ON game.id = moveBest.game_id
+JOIN (
+  SELECT game_id, value as white 
+  FROM game_attribute
+  WHERE attribute='PlayerWhite'
+  ) ga_white 
+ON game.id=ga_white.game_id
+JOIN (
+  SELECT game_id, value as black 
+  FROM game_attribute
+  WHERE attribute='PlayerBlack'
+  ) ga_black 
+ON game.id=ga_black.game_id
+|]
+
+getCollections :: Handler b Service ImportantResult
+getCollections = do
+  res :: [ImpQueryResult] <- runPersist $ rawSql sql []
+  let parsed = fmap constructMove res
+  let comparer a b = fst a == fst b
+  let dict = M.fromList $ zip (fmap fst parsed) $ (fmap . fmap) snd (L.groupBy comparer parsed)
+  -- liftIO $ print dict
+  -- writeLBS . encode dict
+  return dict
+
+printName :: GameAttributeId -> String
+printName = show
+
+gameRead :: Int -> String
+gameRead ga = show ga
+
+type ImpQueryResult = (Single String, Single String, Single String, Single String, Single String, Single String, Single String)
+constructMove :: ImpQueryResult -> (String, ImpMove)
+constructMove (Single db, Single mm, Single mb, Single mw, Single mblack, Single eb, Single em) = (db, ImpMove mm mb mw mblack eb em)
+
+type T = (Single Int, Single Int)
+
+useRes :: T -> String
+useRes (Single x, _) = show x
+
+queryTest :: Handler b Service ()
+queryTest = do
+  let sql = "SELECT game_id, (1 - game_id) FROM game_attribute"
+  res :: [T] <- runPersist $ rawSql sql []
+  liftIO $ print $ fmap useRes res
+  writeLBS . encode $ fmap useRes res
+  return ()
+
+
+
 apiServer :: SnapletLens b (AuthManager b) -> Server (LevelApi (Handler b Service)) (Handler b Service)
-apiServer auth = getMyUser
+apiServer auth = getMyUser :<|> getCollections
   where
     getMyUser = do
       user <- currentUserName auth
@@ -103,7 +180,9 @@ serviceInit auth = makeSnaplet "chess" "Chess Service" Nothing $ do
   addRoutes $ chessRoutes auth
   return $ Service pg d
 
-chessRoutes auth = [("", serveSnap chessApi (apiServer auth))]
+chessRoutes auth = [
+    ("", serveSnap chessApi (apiServer auth))
+  , ("test", queryTest)]
 
 getUser :: SnapletLens b (AuthManager b) -> Handler b Service ()
 getUser auth = do
