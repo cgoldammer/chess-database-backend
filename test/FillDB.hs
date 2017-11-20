@@ -43,7 +43,7 @@ import qualified Chess.Stockfish as Stockfish
 -- Also, get settings for whether to create fake data.
 
 connString :: String -> String
-connString dbName = "host=localhost dbname=" ++ dbName ++ " user=postgres"
+connString dbName = "host=localhost dbname=chess_" ++ dbName ++ " user=postgres"
 
 data Settings = Settings { settingsDBName :: String, settingsIsDataTest :: Bool }
 
@@ -117,8 +117,8 @@ storeFileIntoDB fileName = do
 evaluateGames :: (MonadReader Settings m, MonadIO m) => m ()
 evaluateGames = do
   isTest <- reader settingsIsDataTest
-  case isTest of True -> evaluateGamesReal
-                 False -> evaluateGamesTest
+  case isTest of True -> evaluateGamesTest
+                 False -> evaluateGamesReal
   return ()
 
 evaluateGamesReal :: (MonadReader Settings m, MonadIO m) => m ()
@@ -127,11 +127,14 @@ evaluateGamesReal = do
   games <- liftIO $ inBackend (connString dbName) $ do
     dbGames :: [Entity Game] <- getGamesFromDB
     return dbGames
+  liftIO $ print $ "Games:" ++ show (length games)
   evaluations :: [Key MoveEval] <- fmap concat $ mapM doEvaluation games
   return ()
 
 evaluateGamesTest :: (MonadReader Settings m, MonadIO m) => m ()
-evaluateGamesTest = undefined
+evaluateGamesTest = do
+  liftIO $ print "Test evaluation"
+  return ()
 
 doEvaluation :: (MonadReader Settings m, MonadIO m) => Entity Game -> m [Key MoveEval]
 doEvaluation dbGame = do
@@ -144,8 +147,9 @@ doEvaluation dbGame = do
   return keys
 
 
+
 storeGameIntoDB dbResult g = do
-  let pgn = L.intercalate " " $ Pgn.gamePgnMoves $ Pgn.parsedPgnGame g
+  let pgn = Pgn.gamePgnFull $ Pgn.parsedPgnGame g
   let tags = (Pgn.pgnGameTags g) :: [Pgn.PgnTag]
   players <- storePlayers tags
   let (playerWhite, playerBlack) = M.fromJust players
@@ -206,16 +210,18 @@ constructEvalMove gm n isWhite (Pgn.MoveSummary mv mvBest evalMove evalBest _) =
         mvBestString = Board.shortMove mvBest
 
 evalInt :: Stockfish.Evaluation -> Maybe Int 
-evalInt (Left n) = Just n
-evalInt (Right _) = Nothing
+evalInt (Right n) = Just n
+evalInt (Left _) = Nothing
 
 evalMate :: Stockfish.Evaluation -> Maybe Int 
-evalMate (Left _) = Nothing
-evalMate (Right n) = Just n
+evalMate (Right _) = Nothing
+evalMate (Left n) = Just n
 
   
 dbGameToPGN :: Game -> Pgn.Game
 dbGameToPGN game = M.fromJust $ EitherC.rightToMaybe $ Pgn.pgnGame $ Pgn.unsafeMoves $ Te.pack $ gamePgn game
+
+
   
 
 -- Questions I can ask

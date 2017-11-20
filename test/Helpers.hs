@@ -10,7 +10,12 @@
 {-# LANGUAGE TemplateHaskell            #-}
 {-# LANGUAGE TypeFamilies               #-}
 
-module Helpers where
+module Helpers (
+    inBackend
+  , DataResult
+  , formatForDB
+  , deleteDBContents)
+where
 
 import Services.Types
 import qualified Database.Persist as Ps
@@ -23,8 +28,14 @@ import Control.Monad.Trans.Resource
 import Control.Monad.Trans.Reader (ReaderT)
 import qualified Data.ByteString.Char8 as B
 
+import qualified Chess.Pgn as Pgn
+
 -- See https://stackoverflow.com/questions/34624469/crud-pattern-on-haskell-persistent
-inBackend :: String -> ReaderT PsP.SqlBackend (NoLoggingT (ResourceT IO)) a -> IO a
+--
+--
+type DataResult a = ReaderT PsP.SqlBackend (NoLoggingT (ResourceT IO)) a
+
+inBackend :: String -> DataResult a -> IO a
 inBackend conn action = runStderrLoggingT $ PsP.withPostgresqlPool (B.pack conn) 10 $ \pool -> liftIO $ do
   flip PsP.runSqlPersistMPool pool $ do
     PsP.runMigration migrateAll
@@ -38,3 +49,12 @@ deleteDBContents conn = inBackend conn $ do
   Ps.deleteWhere ([] :: [Ps.Filter Player])
   Ps.deleteWhere ([] :: [Ps.Filter Database])
   return ()
+
+formatForDB :: Pgn.PgnTag -> (String, String)
+formatForDB (Pgn.PgnEvent s) = ("Event", s)
+formatForDB (Pgn.PgnOther name s) = (name, s)
+formatForDB (Pgn.PgnDate s) = ("Date", s)
+formatForDB (Pgn.PgnRound s) = ("Round", show s)
+formatForDB (Pgn.PgnWhite player) = ("White", show player)
+formatForDB (Pgn.PgnBlack player) = ("White", show player)
+
