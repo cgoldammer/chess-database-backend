@@ -80,6 +80,9 @@ Executable fill_db
     , resourcet
     , transformers
     , snaplet-persistent
+    , mtl
+    , either
+    , optparse-applicative
 
 Executable test
   hs-source-dirs: test
