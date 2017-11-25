@@ -1,24 +1,31 @@
-[Event "URS-chT"]
-[Site "Riga"]
-[Date "1975.??.??"]
-[Round "?"]
-[White "Khalafian, Erna"]
-[Black "Matveeva, Inna"]
+[Event "test"]
+[White "A, Anna"]
+[Black "B, Bertram"]
 [Result "0-1"]
-[ECO "B91"]
-[WhiteElo "2000"]
-[BlackElo "2040"]
-[PlyCount "144"]
-[EventDate "1975.07.15"]
-[EventType "team"]
-[EventRounds "9"]
-[EventCountry "URS"]
-[SourceTitle "MCD"]
-[Source "ChessBase"]
-[SourceDate "1999.07.01"]
-[SourceVersion "1"]
-[SourceVersionDate "1999.07.01"]
-[SourceQuality "1"]
 
-1. e4 c5 2. Nf3 d6 3. d4 cxd4 4. Nxd4 Nf6
+1. e4 f5 2. ef5 d6 3. Qh5
+1-0
+
+[Event "test"]
+[White "B, Bertram"]
+[Black "A, Anna"]
+[Result "1-0"]
+
+1. e4 e5 2. d4 exd4 3. Nc3 dxc3 4. f4 cxb2 5. h4
 0-1
+
+[Event "test"]
+[White "C, Conny"]
+[Black "A, Anna"]
+[Result "1/2-1/2"]
+
+1. e4 e5 2. d3 d6 3. c3 c6 4. a3 a6 5. h3 h6
+1/2-1/2
+
+[Event "test"]
+[White "C, Conny"]
+[Black "A, Anna"]
+[Result "1/2-1/2"]
+
+1. e4 e5 2. d3 d6 3. c3 c6 4. a3 a6 5. h3 h6 6. b3 b6 7. g3 g6
+1/2-1/2

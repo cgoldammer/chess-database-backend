@@ -2,6 +2,7 @@
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE GADTs #-}
@@ -12,11 +13,10 @@
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE DataKinds         #-}
 {-# LANGUAGE DeriveGeneric     #-}
+{-# LANGUAGE DeriveAnyClass     #-}
 {-# LANGUAGE PolyKinds         #-}
 {-# LANGUAGE TypeFamilies      #-}
 {-# LANGUAGE TypeOperators     #-}
-{-# LANGUAGE DeriveGeneric, DeriveAnyClass #-}
-
 
 module Services.Service where
 
@@ -24,9 +24,11 @@ import GHC.Generics (Generic)
 import qualified Control.Lens as Lens
 import Control.Monad.State.Class as SC
 import Data.Aeson
+import Data.Aeson.Types
 import Snap.Core
 import Snap.Snaplet
 import Snap.Snaplet.PostgresqlSimple
+import Data.Char as C
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as BL
 import Snap.Snaplet.Auth
@@ -34,11 +36,12 @@ import Snap.Snaplet.Persistent
 import Control.Exception (try)
 import qualified Data.Text as T
 import Control.Monad
-import Database.Esqueleto
-import Data.Map as Map
 import Servant.API hiding (GET, POST)
+
 import qualified Database.Persist as Ps
 import qualified Database.Persist.Postgresql as PsP
+import Database.Esqueleto
+
 import Control.Monad.IO.Class (liftIO, MonadIO)
 import Snap.Snaplet.Persistent
 import Text.Read (readMaybe)
@@ -48,12 +51,15 @@ import Servant (serveSnap, Server, serveDirectory, ServerT)
 import Data.Maybe
 import Data.Proxy (Proxy(..))
 import qualified Data.Time.Clock as C
-import Services.Types
 import qualified Data.Map as M
 import Data.Conduit
 import qualified Data.Conduit.List as CL
 import Data.List as L
 import Text.RawString.QQ
+import Debug.Trace
+
+import Services.Types
+import qualified Services.Helpers as Helpers
 
 
 data Service = Service {
@@ -77,12 +83,9 @@ chessCreateUser name = do
 
 type LoginUser = Maybe Int
 
-chessApi :: Proxy (LevelApi (Handler b Service))
-chessApi = Proxy
 
-type LevelApi m = 
-       "user"     :> Get '[JSON] (Maybe AppUser) 
-  :<|> "blunders" :> Get '[JSON] ImportantResult
+
+
 
 currentUserName :: SnapletLens b (AuthManager b) -> Handler b Service (Maybe (T.Text))
 currentUserName auth = do
@@ -127,6 +130,68 @@ JOIN (
 ON game.id=ga_black.game_id
 |]
 
+-- This is the required format (in JSON):
+-- 	{'key': 2,
+-- 	'player': 'Magnus Carlsen',
+-- 	'evaluations': {1: 5, 2: -4, 5: 40}
+-- 	}
+--
+-- selectUser :: MonadIO m => Maybe T.Text -> SqlPersistT m [AppUser]
+-- selectUser (Just name) = do
+--   users <- select $ from $ \user -> do
+--     let n = Just $ T.unpack name
+--     where_ $ user ^. AppUserName ==. val n
+--     return user
+--   return $ entityVal <$> users
+-- selectUser Nothing = do
+--   return []
+--
+
+test :: MonadIO m => SqlPersistT m [Entity AppUser]
+test = do
+  users <- select $ from $ \user -> do
+    return user
+  return users
+
+getPlayers :: Handler b Service [Entity Player]
+getPlayers = runPersist $ do
+  players <- select $
+    from $ \p -> do
+      return p
+  return players
+
+getEvalResults :: Handler b Service [Helpers.EvalResult]
+getEvalResults = do
+  players :: [Entity Player] <- getPlayers
+  let playerKeys = fmap entityKey players
+  evals <- getMoveEvals playerKeys
+  return evals
+
+getMoveSummary :: Handler b Service [Helpers.MoveSummary]
+getMoveSummary = do
+  players :: [Entity Player] <- getPlayers
+  let playerKeys = fmap entityKey players
+  evals <- getMoveEvals playerKeys
+  return $ Helpers.summarizeEvals players evals
+
+
+selectEvalResults :: MonadIO m => [Key Player] -> SqlPersistT m [Helpers.EvalResult]
+selectEvalResults players = do
+  results <- select $ 
+    from $ \(me, g) -> do
+    where_ (me ^. MoveEvalGameId ==. g ^. GameId)
+    return (me, g)
+  return results
+
+getMoveEvals :: [Key Player] -> Handler b Service [Helpers.EvalResult]
+getMoveEvals players = do
+  res <- runPersist $ selectEvalResults players
+  return res
+
+-- TODO
+-- Print rows
+-- Run tasks in shell
+
 getCollections :: Handler b Service ImportantResult
 getCollections = do
   res :: [ImpQueryResult] <- runPersist $ rawSql sql []
@@ -161,14 +226,24 @@ queryTest = do
   return ()
 
 
+chessApi :: Proxy (ChessApi (Handler b Service))
+chessApi = Proxy
 
-apiServer :: SnapletLens b (AuthManager b) -> Server (LevelApi (Handler b Service)) (Handler b Service)
-apiServer auth = getMyUser :<|> getCollections
+type ChessApi m = 
+       "user"     :> Get '[JSON] (Maybe AppUser) 
+  :<|> "blunders" :> Get '[JSON] ImportantResult
+  :<|> "moveSummary" :> Get '[JSON] [Helpers.MoveSummary]
+  :<|> "players" :> Get '[JSON] [Player]
+  :<|> "evalResults" :> Get '[JSON] [Helpers.EvalResult]
+
+apiServer :: SnapletLens b (AuthManager b) -> Server (ChessApi (Handler b Service)) (Handler b Service)
+apiServer auth = getMyUser :<|> getCollections :<|> getMoveSummary :<|> getPlayersOnly :<|> getEvalResults
   where
     getMyUser = do
       user <- currentUserName auth
       users <- runPersist $ selectUser user
       return $ listToMaybe users
+    getPlayersOnly = (fmap . fmap) entityVal getPlayers
 
 usId :: Maybe T.Text -> Int
 usId x = maybe 0 (read . T.unpack) x

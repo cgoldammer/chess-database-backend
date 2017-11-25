@@ -19,6 +19,8 @@ import Control.Monad.IO.Class  (liftIO)
 import Database.Persist
 import Database.Persist.Postgresql
 import Database.Persist.TH
+import Data.Aeson
+import Data.Aeson.Types
 
 
 share [mkPersist sqlSettings, mkMigrate "migrateAll"] [persistLowerCase|
@@ -26,6 +28,7 @@ Game json
   databaseId DatabaseId
   playerWhiteId PlayerId
   playerBlackId PlayerId
+  gameResult Int
   pgn String
 
 Database json
@@ -49,6 +52,7 @@ MoveEval json
 Player json
   firstName String
   lastName String
+  FullName firstName lastName
 
 AppUser json
   userId Int
@@ -56,3 +60,13 @@ AppUser json
   subscriptionTime UTCTime default=CURRENT_TIMESTAMP
   deriving Show
 |]
+
+instance Show MoveEval
+  where show = show . toJSON
+
+instance Show Game
+  where show = show . toJSON
+
+instance Show Player where
+  show p = playerFirstName p ++ " " ++ playerLastName p
+

@@ -11,7 +11,7 @@ cabal-version:       >=1.10
 
 library
   hs-source-dirs:      src
-  exposed-modules: Services.Types
+  exposed-modules: Services.Types, Services.Helpers
   build-depends:
     base                      >= 4     && < 5,
     bytestring                >= 0.9.1 && < 0.11,
@@ -19,7 +19,10 @@ library
     persistent,
     persistent-postgresql,
     postgresql-simple,
-    persistent-template
+    persistent-template,
+    aeson,
+    containers,
+    lens
 
 Executable app
   hs-source-dirs: src
@@ -84,9 +87,10 @@ Executable fill_db
     , either
     , optparse-applicative
 
-Executable test
-  hs-source-dirs: test
-  main-is: BareTest.hs
+test-suite backend-test
+  type:                exitcode-stdio-1.0
+  hs-source-dirs:      test
+  main-is:             Spec.hs
   default-language: Haskell2010
   build-depends:
       base
@@ -96,7 +100,6 @@ Executable test
     , directory
     , time
     , text
-                
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N
   default-language:    Haskell2010
 

@@ -22,13 +22,16 @@ import Data.Time
 import qualified Data.Text as Te
 import qualified Data.List as L
 import qualified Data.Maybe as M
+import Data.Maybe
 import Data.Either
 import Control.Monad.IO.Class
+import Control.Applicative
 import Control.Monad.Trans.Resource
 import Control.Monad.Trans.Reader (ReaderT)
 import Control.Monad.Reader.Class
 import Control.Monad.Reader
 import qualified Data.Either.Combinators as EitherC
+import Debug.Trace
 
 import Services.Types
 import Helpers
@@ -36,6 +39,8 @@ import Options.Applicative
 -- import Data.Semigroup ((<>))
 
 import qualified Chess.Pgn as Pgn
+import qualified Chess.Helpers as Helpers
+
 import qualified Chess.Board as Board
 import qualified Chess.Stockfish as Stockfish
 
@@ -97,13 +102,13 @@ readerActions = do
 -- instance DBIO IO where
 --   getInDB
 
-files = ["game.pgn"]
-numberOfGames = 1
+files = ["tata.pgn"]
+numberOfGames = 100
 
 storeGamesIntoDB :: (MonadReader Settings m, MonadIO m) => m ()
 storeGamesIntoDB = mapM_ storeFileIntoDB files
 
-storeFileIntoDB :: (MonadReader Settings m, MonadIO m) => String -> m [Ps.Key Game]
+storeFileIntoDB :: (MonadReader Settings m, MonadIO m) => String -> m [Maybe (Ps.Key Game)]
 storeFileIntoDB fileName = do
   dbName <- reader settingsDBName
   res <- liftIO $ inBackend (connString dbName) $ do
@@ -134,34 +139,59 @@ evaluateGamesReal = do
 evaluateGamesTest :: (MonadReader Settings m, MonadIO m) => m ()
 evaluateGamesTest = do
   liftIO $ print "Test evaluation"
+  evaluateGamesReal
   return ()
 
 doEvaluation :: (MonadReader Settings m, MonadIO m) => Entity Game -> m [Key MoveEval]
 doEvaluation dbGame = do
-  let game = dbGameToPGN $ entityVal $ dbGame
-  summaries <- liftIO $ Pgn.gameSummaries game
-  dbName <- reader settingsDBName
-  keys <- liftIO $ inBackend (connString dbName) $ do
-    k <- Ps.insertMany $ evalToRow (entityKey dbGame) summaries
-    return k
+  let maybeGame = dbGameToPGN $ entityVal $ dbGame
+  keys <- case maybeGame of 
+    (Just game) -> do
+      summaries <- liftIO $ Pgn.gameSummaries game
+      dbName <- reader settingsDBName
+      keys <- liftIO $ inBackend (connString dbName) $ do
+        k <- Ps.insertMany $ evalToRow (entityKey dbGame) summaries
+        return k
+      return keys
+    Nothing ->
+      return []
   return keys
 
+resultDBFormat :: Pgn.PgnTag -> Int
+resultDBFormat (Pgn.PgnResult Pgn.WhiteWin) = 1
+resultDBFormat (Pgn.PgnResult Pgn.BlackWin) = -1
+resultDBFormat (Pgn.PgnResult Pgn.Draw) = 0
+resultDBFormat _ = 0
 
-
+storeGameIntoDB :: Key Database -> Pgn.PgnGame -> DataResult (Maybe (Key Game))
 storeGameIntoDB dbResult g = do
   let pgn = Pgn.gamePgnFull $ Pgn.parsedPgnGame g
   let tags = (Pgn.pgnGameTags g) :: [Pgn.PgnTag]
-  players <- storePlayers tags
-  let (playerWhite, playerBlack) = M.fromJust players
+  let requiredTags = parseRequiredTags tags
+  if trace (show tags) $ isJust requiredTags then do
+    let parsedTags = fromJust requiredTags
+    (playerWhite, playerBlack) <- storePlayers parsedTags
+    let resultInt = resultDBFormat $ requiredResult parsedTags
+    -- Storing the game
+    let gm = (Game dbResult playerWhite playerBlack resultInt pgn) :: Game
+    gameResult <- Ps.insert gm
+    -- Storing the tags
+    let formattedTags = fmap formatForDB $ filter (not . filterPlayer) tags
+    mapM_ (\(name, val) -> Ps.insert (GameAttribute gameResult name val)) formattedTags
+    return $ Just gameResult
+  else do
+    return Nothing
 
-  -- Storing the game
-  let gm = (Game dbResult playerWhite playerBlack pgn) :: Game
-  gameResult <- Ps.insert gm
-  -- Storing the tags
-  let formattedTags = fmap formatForDB $ filter (not . filterPlayer) tags
-  mapM_ (\(name, val) -> Ps.insert (GameAttribute gameResult name val)) formattedTags
-  return gameResult
+data RequiredTags = RequiredTags {
+    requiredWhitePlayer :: Pgn.PgnTag
+  , requiredBlackPlayer :: Pgn.PgnTag
+  , requiredResult :: Pgn.PgnTag}
 
+parseRequiredTags :: [Pgn.PgnTag] -> Maybe RequiredTags
+parseRequiredTags tags = liftA3 RequiredTags maybeWhite maybeBlack maybeResult
+  where maybeWhite = Helpers.safeHead $ filter filterWhitePlayer tags
+        maybeBlack = Helpers.safeHead $ filter filterBlackPlayer tags
+        maybeResult = Helpers.safeHead $ filter filterResult tags
   
 filterPlayer :: Pgn.PgnTag -> Bool
 filterPlayer (Pgn.PgnWhite _) = False
@@ -176,24 +206,25 @@ filterBlackPlayer :: Pgn.PgnTag -> Bool
 filterBlackPlayer (Pgn.PgnBlack _) = True
 filterBlackPlayer _ = False
 
-storePlayers :: [Pgn.PgnTag] -> DataResult (Maybe (Key Player, Key Player))
+filterResult :: Pgn.PgnTag -> Bool
+filterResult (Pgn.PgnResult _) = True
+filterResult _ = False
+
+
+storePlayers :: RequiredTags -> DataResult (Key Player, Key Player)
 storePlayers tags = do
-  let whitePlayer = M.listToMaybe $ filter filterWhitePlayer tags
-  let blackPlayer = M.listToMaybe $ filter filterBlackPlayer tags
-  res <- if (M.isJust whitePlayer && M.isJust blackPlayer)
-    then do
-    let (Pgn.PgnWhite (Pgn.Player firstWhite lastWhite)) = M.fromJust whitePlayer
-    let (Pgn.PgnBlack (Pgn.Player firstBlack lastBlack)) = M.fromJust blackPlayer
-    whiteResult <- Ps.insert (Player firstWhite lastWhite)
-    blackResult <- Ps.insert (Player firstBlack lastBlack)
-    return $ Just (whiteResult, blackResult)
-  else do
-    return Nothing
-  return res
+  let (whitePlayer, blackPlayer) = (requiredWhitePlayer tags, requiredBlackPlayer tags)
+  let (Pgn.PgnWhite (Pgn.Player firstWhite lastWhite)) = whitePlayer
+  let (Pgn.PgnBlack (Pgn.Player firstBlack lastBlack)) = blackPlayer
+  whiteResult <- Ps.insertBy (Player firstWhite lastWhite)
+  blackResult <- Ps.insertBy (Player firstBlack lastBlack)
+  let keyReader = either entityKey id
+  return (keyReader whiteResult, keyReader blackResult)
   
+
 getGamesFromDB :: DataResult [Entity Game]
 getGamesFromDB = do
-  games <- Ps.selectList [] [LimitTo 1]
+  games <- Ps.selectList [] [LimitTo numberOfGames]
   return games
 
 evalToRow :: Key Game -> [Pgn.MoveSummary] -> [MoveEval]
@@ -218,8 +249,8 @@ evalMate (Right _) = Nothing
 evalMate (Left n) = Just n
 
   
-dbGameToPGN :: Game -> Pgn.Game
-dbGameToPGN game = M.fromJust $ EitherC.rightToMaybe $ Pgn.pgnGame $ Pgn.unsafeMoves $ Te.pack $ gamePgn game
+dbGameToPGN :: Game -> Maybe Pgn.Game
+dbGameToPGN game = EitherC.rightToMaybe $ Pgn.pgnGame $ Pgn.unsafeMoves $ Te.pack $ gamePgn game
 
 
   
