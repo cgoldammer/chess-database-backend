@@ -43,7 +43,7 @@ padEvals :: Int -> GameResult -> [(Int, Int)] -> [(Int, Int)]
 padEvals desiredLength result vals
   | length vals >= desiredLength = vals
   | otherwise = vals ++ zipped
-      where zipped = zip [desiredLength..(length vals)] (repeat (resultValue result))
+      where zipped = zip [((length vals) + 1)..desiredLength] (repeat (resultValue result))
 
 invertGameResult :: GameResult -> GameResult
 invertGameResult Win = Lose

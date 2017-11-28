@@ -27,8 +27,7 @@ import Control.Monad.IO.Class
 import Control.Monad.Trans.Resource
 import Control.Monad.Trans.Reader (ReaderT)
 import qualified Data.ByteString.Char8 as B
-
-import qualified Chess.Pgn as Pgn
+import qualified Chess.Pgn.Logic as Pgn
 
 -- See https://stackoverflow.com/questions/34624469/crud-pattern-on-haskell-persistent
 --

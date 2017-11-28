@@ -24,16 +24,22 @@ import Data.Aeson.Types
 
 
 share [mkPersist sqlSettings, mkMigrate "migrateAll"] [persistLowerCase|
+Database json
+  name String
+  UniqueDatabaseName name
+
+Tournament json
+  name String
+  UniqueTournamentName name
+
 Game json
   databaseId DatabaseId
   playerWhiteId PlayerId
   playerBlackId PlayerId
   gameResult Int
+  tournament TournamentId
   pgn String
-
-Database json
-  name String
-  UniqueDatabaseName name
+  UniqueGame databaseId playerWhiteId playerBlackId tournament pgn
 
 GameAttribute json
   gameId GameId

@@ -86,6 +86,7 @@ Executable fill_db
     , mtl
     , either
     , optparse-applicative
+    , raw-strings-qq
 
 test-suite backend-test
   type:                exitcode-stdio-1.0
