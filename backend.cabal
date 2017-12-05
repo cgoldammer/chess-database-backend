@@ -59,7 +59,8 @@ Executable app
     esqueleto,
     resourcet,
     conduit,
-    raw-strings-qq
+    raw-strings-qq,
+    js-jquery
   main-is: Main.hs
 
 

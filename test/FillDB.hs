@@ -53,8 +53,8 @@ connString dbName = "host=localhost dbname=chess_" ++ dbName ++ " user=postgres"
 
 data Settings = Settings { 
     settingsDBName :: String
-  , settingsIsDataTest :: Bool
-  , settingsOnlyContinueEval :: Bool}
+  , settingsRunEval :: Bool
+  , settingsOnlyContinueEval :: Bool} deriving (Show)
 
 type IsTest = Bool
 type OnlyContinue = Bool
@@ -65,8 +65,8 @@ dbTypeParser :: Parser String
 dbTypeParser = fmap dbNameReader $ switch (long "test" <> short 't' <> help "Run test analysis")
 
 dbNameReader :: IsTest -> String
-dbNameReader False = "prod"
 dbNameReader True = "test"
+dbNameReader False = "prod"
 
 parse :: Parser Settings
 parse = Settings
@@ -79,49 +79,52 @@ opts = info (parse <**> helper)
   <> progDesc "Haskell-chess"
   <> header "" )
 
-dbForTest :: IsTest -> String
-dbForTest True = "test"
-dbForTest False = "prod"
-
 main :: IO ()
 main = do
   settings <- execParser opts
   runJob settings
   return ()
 
+doNothing :: IO ()
+doNothing = do
+  return ()
+
 runJob :: Settings -> IO ()
 runJob settings = do
   let conn = connString $ settingsDBName settings
-  deleteDBContents conn
+  let onlyContinueEval = settingsOnlyContinueEval settings
+  if not onlyContinueEval then deleteDBContents conn else doNothing
   runReaderT readerActions settings
   return ()
 
-readerActions = do
-  storeGamesIntoDB
-  evaluateGames
+doNothing' = do
   return ()
 
--- queries to run:
--- strength of average move (show in elo equivalent)
--- show rating and performance by time period
--- show performance by move number, e.g. am I good in
--- opening or endgame?
--- how good is Anish Giri - should be amazing in opening.
--- do for certain time period.
-  
--- class DBIO m where
---   getInDB :: m (DataResult a -> IO a)
+readerActions = do
+  continue <- reader settingsOnlyContinueEval
+  evaluate <- reader settingsRunEval
+  if continue then do
+    if evaluate then do evaluateGames else doNothing'
+  else do
+    storeGamesIntoDB
+    if evaluate then do evaluateGames else doNothing'
+  return ()
 
--- instance DBIO IO where
---   getInDB
+numberOfGames = 200
+maxNumberPlayersShown = 2
 
-files = ["tata.pgn"]
-numberOfGames = 5
+getDBType :: String -> IsTest
+getDBType "prod" = False
+getDBType _ = True
 
-
+getFiles :: IsTest -> [String]
+getFiles True = ["game.pgn"]
+getFiles False = ["tata2.pgn"]
 
 storeGamesIntoDB :: (MonadReader Settings m, MonadIO m) => m ()
-storeGamesIntoDB = mapM_ storeFileIntoDB files
+storeGamesIntoDB = do
+  dbName <- reader settingsDBName
+  mapM_ storeFileIntoDB $ getFiles $ getDBType dbName
 
 storeFileIntoDB :: (MonadReader Settings m, MonadIO m) => String -> m [Maybe (Ps.Key Game)]
 storeFileIntoDB fileName = do
@@ -136,9 +139,8 @@ storeFileIntoDB fileName = do
 
 evaluateGames :: (MonadReader Settings m, MonadIO m) => m ()
 evaluateGames = do
-  isTest <- reader settingsIsDataTest
-  case isTest of True -> evaluateGamesTest
-                 False -> evaluateGamesReal
+  isTest <- fmap getDBType $ reader settingsDBName
+  if isTest then evaluateGamesTest else evaluateGamesReal
   return ()
 
 evaluateGamesReal :: (MonadReader Settings m, MonadIO m) => m ()
@@ -255,21 +257,22 @@ storeTournament tags = do
 
 sqlGamesAll = [r|
 SELECT ??
+FROM game
 |]
 
 sqlGamesUnevaluated = [r|
 SELECT ?? 
+FROM game
 WHERE game.id not in (SELECT DISTINCT game_id from move_eval)
 |]
 
 
 getGamesFromDB :: Bool -> DataResult [Entity Game]
-getGamesFromDB = undefined
--- getGamesFromDB continueEval = do
---   let query = if continueEval then sqlGamesUnevaluated else sqlGamesAll
---   games :: [Entity Game] <- rawSql query []
---   games <- Ps.selectList [] [LimitTo numberOfGames]
---   return games
+getGamesFromDB continueEval = do
+  let query = if continueEval then sqlGamesUnevaluated else sqlGamesAll
+  games :: [Entity Game] <- rawSql query []
+  games <- Ps.selectList [] [LimitTo numberOfGames]
+  return games
 
 evalToRow :: Key Game -> [Pgn.MoveSummary] -> [MoveEval]
 evalToRow g ms = evalToRowColor g 1 Board.White ms

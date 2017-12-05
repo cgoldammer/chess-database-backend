@@ -43,7 +43,7 @@ app = makeSnaplet "app" "An snaplet example application." Nothing $ do
     s <- nestSnaplet "sess" sess $ initCookieSessionManager "site_key.txt" "sess" Nothing (Just 3600)
     d <- nestSnaplet "db" db $ initPersist (runMigrationUnsafe migrateAuth)
     a <- nestSnaplet "auth" auth $ initPersistAuthManager sess (persistPool $ view snapletValue d)
-    ls <- nestSnaplet "levels" service $ S.serviceInit auth
+    ls <- nestSnaplet "api" service $ S.serviceInit auth
     addRoutes routes
     return $ App h s d a ls
 

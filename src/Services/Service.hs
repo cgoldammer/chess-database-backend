@@ -21,6 +21,7 @@
 module Services.Service where
 
 import GHC.Generics (Generic)
+import GHC.Int
 import qualified Control.Lens as Lens
 import Control.Monad.State.Class as SC
 import Data.Aeson
@@ -36,6 +37,8 @@ import Snap.Snaplet.Persistent
 import Control.Exception (try)
 import qualified Data.Text as T
 import Control.Monad
+import Language.Javascript.JQuery
+
 import Servant.API hiding (GET, POST)
 
 import qualified Database.Persist as Ps
@@ -84,9 +87,6 @@ chessCreateUser name = do
 type LoginUser = Maybe Int
 
 
-
-
-
 currentUserName :: SnapletLens b (AuthManager b) -> Handler b Service (Maybe (T.Text))
 currentUserName auth = do
     cu <- withTop auth $ do
@@ -99,53 +99,6 @@ getCurrentUserName a = fmap userLogin a
 
 data ImpMove = ImpMove { impMove :: String, impBest :: String, impWhite :: String, impBlack :: String, impMoveEval :: String, impBestEval :: String } deriving (Generic, FromJSON, ToJSON)
 
--- The api returns a list of `ImpMove`s for each database (a string)
-type ImportantResult = M.Map String [ImpMove] 
-
-sql = [r|
-SELECT 'test' as db, move, best, white, black, evalMove, evalBest
-FROM game
-JOIN (
-  SELECT game_id, move as move, eval as evalMove 
-  FROM important_move 
-  WHERE is_blunder
-) move 
-ON game.id = move.game_id
-JOIN (
-  SELECT game_id, move as best, eval as evalBest from important_move 
-  WHERE is_best
-) moveBest
-ON game.id = moveBest.game_id
-JOIN (
-  SELECT game_id, value as white 
-  FROM game_attribute
-  WHERE attribute='PlayerWhite'
-  ) ga_white 
-ON game.id=ga_white.game_id
-JOIN (
-  SELECT game_id, value as black 
-  FROM game_attribute
-  WHERE attribute='PlayerBlack'
-  ) ga_black 
-ON game.id=ga_black.game_id
-|]
-
--- This is the required format (in JSON):
--- 	{'key': 2,
--- 	'player': 'Magnus Carlsen',
--- 	'evaluations': {1: 5, 2: -4, 5: 40}
--- 	}
---
--- selectUser :: MonadIO m => Maybe T.Text -> SqlPersistT m [AppUser]
--- selectUser (Just name) = do
---   users <- select $ from $ \user -> do
---     let n = Just $ T.unpack name
---     where_ $ user ^. AppUserName ==. val n
---     return user
---   return $ entityVal <$> users
--- selectUser Nothing = do
---   return []
---
 
 test :: MonadIO m => SqlPersistT m [Entity AppUser]
 test = do
@@ -160,47 +113,80 @@ getPlayers = runPersist $ do
       return p
   return players
 
-getEvalResults :: Handler b Service [Helpers.EvalResult]
-getEvalResults = do
+getTournaments :: Handler b Service [Entity Tournament]
+getTournaments = runPersist $ do
+  tournaments <- select $
+    from $ \t -> do
+      return t
+  return tournaments
+
+intToKey :: Int -> Key Tournament
+intToKey = toSqlKey . fromIntegral
+
+data DataSummary = DataSummary { 
+    numberTournaments :: Int
+  , numberGames :: Int
+  , numberGameEvals :: Int
+  , numberMoveEvals :: Int
+} deriving (Generic, Show, Eq, ToJSON, FromJSON)
+
+dataSummaryQuery = [r|
+WITH 
+    numberTournaments as (SELECT count(distinct id) as "numberTournaments" FROM tournament )
+  , numberGames as (SELECT count(distinct id) as "numberGames" FROM game)
+  , numberGameEvals as (
+      SELECT count(distinct id) as "numberGameEvals" FROM (
+          SELECT id FROM game WHERE id in (
+            SELECT DISTINCT game_id FROM move_eval
+          )
+      ) as numberGameEvals
+    )
+  , numberMoveEvals as (SELECT count(*) as "numberMoveEvals" FROM move_eval)
+SELECT * 
+FROM numberTournaments
+CROSS JOIN numberGames
+CROSS JOIN numberGameEvals
+CROSS JOIN numberMoveEvals;
+|]
+
+type QueryType = (Single Int, Single Int, Single Int, Single Int)
+
+getDataSummary :: Handler b Service DataSummary
+getDataSummary = do
+  results :: [QueryType] <- runPersist $ rawSql dataSummaryQuery []
+  let (Single numberTournaments, Single numberGames, Single numberGameEvals, Single numberMoveEvals) = head results
+  return $ DataSummary numberTournaments numberGames numberGameEvals numberMoveEvals
+
+evalData :: MoveRequestData -> Handler b Service ([Entity Player], [Helpers.EvalResult])
+evalData mrData = do
+  let tournaments = moveRequestTournaments mrData
+  let tournamentKeys = fmap intToKey tournaments
   players :: [Entity Player] <- getPlayers
   let playerKeys = fmap entityKey players
-  evals <- getMoveEvals playerKeys
+  evals <- getMoveEvals playerKeys tournamentKeys
+  return (players, evals)
+
+getEvalResults :: MoveRequestData -> Handler b Service [Helpers.EvalResult]
+getEvalResults mrData = do
+  (_, evals) <- evalData mrData
   return evals
 
-getMoveSummary :: Handler b Service [Helpers.MoveSummary]
-getMoveSummary = do
-  players :: [Entity Player] <- getPlayers
-  let playerKeys = fmap entityKey players
-  evals <- getMoveEvals playerKeys
-  return $ Helpers.summarizeEvals players evals
+getMoveSummary :: MoveRequestData -> Handler b Service [Helpers.MoveSummary]
+getMoveSummary mrData = do
+  liftIO $ print $ "Move request" ++ show mrData
+  (playerKeys, evals) <- evalData mrData
+  return $ Helpers.summarizeEvals playerKeys evals
 
-
-selectEvalResults :: MonadIO m => [Key Player] -> SqlPersistT m [Helpers.EvalResult]
-selectEvalResults players = do
+selectEvalResults :: MonadIO m => [Key Player] -> [Key Tournament] -> SqlPersistT m [Helpers.EvalResult]
+selectEvalResults players tournaments = do
   results <- select $ 
-    from $ \(me, g) -> do
-    where_ (me ^. MoveEvalGameId ==. g ^. GameId)
+    from $ \(me, g, t) -> do
+    trace (show tournaments) $ where_ ( (me ^. MoveEvalGameId ==. g ^. GameId) &&. (g ^. GameTournament ==. t ^. TournamentId) &&. (t ^. TournamentId `in_` valList (fmap id tournaments)))
     return (me, g)
   return results
 
-getMoveEvals :: [Key Player] -> Handler b Service [Helpers.EvalResult]
-getMoveEvals players = do
-  res <- runPersist $ selectEvalResults players
-  return res
-
--- TODO
--- Print rows
--- Run tasks in shell
-
-getCollections :: Handler b Service ImportantResult
-getCollections = do
-  res :: [ImpQueryResult] <- runPersist $ rawSql sql []
-  let parsed = fmap constructMove res
-  let comparer a b = fst a == fst b
-  let dict = M.fromList $ zip (fmap fst parsed) $ (fmap . fmap) snd (L.groupBy comparer parsed)
-  -- liftIO $ print dict
-  -- writeLBS . encode dict
-  return dict
+getMoveEvals :: [Key Player] -> [Key Tournament] -> Handler b Service [Helpers.EvalResult]
+getMoveEvals players tournaments = runPersist (selectEvalResults players tournaments)
 
 printName :: GameAttributeId -> String
 printName = show
@@ -229,21 +215,28 @@ queryTest = do
 chessApi :: Proxy (ChessApi (Handler b Service))
 chessApi = Proxy
 
+data MoveRequestData = MoveRequestData {moveRequestTournaments :: [Int] } deriving (Generic, FromJSON, ToJSON, Show)
+
 type ChessApi m = 
        "user"     :> Get '[JSON] (Maybe AppUser) 
-  :<|> "blunders" :> Get '[JSON] ImportantResult
-  :<|> "moveSummary" :> Get '[JSON] [Helpers.MoveSummary]
   :<|> "players" :> Get '[JSON] [Player]
-  :<|> "evalResults" :> Get '[JSON] [Helpers.EvalResult]
+  :<|> "tournaments" :> Get '[JSON] [Entity Tournament]
+  :<|> "evalResults" :> ReqBody '[JSON] MoveRequestData :> Post '[JSON] [Helpers.EvalResult]
+  :<|> "moveSummary" :> ReqBody '[JSON] MoveRequestData :> Post '[JSON] [Helpers.MoveSummary]
+  :<|> "dataSummary" :> Get '[JSON] DataSummary
 
 apiServer :: SnapletLens b (AuthManager b) -> Server (ChessApi (Handler b Service)) (Handler b Service)
-apiServer auth = getMyUser :<|> getCollections :<|> getMoveSummary :<|> getPlayersOnly :<|> getEvalResults
-  where
+apiServer auth = fullApi where
+    fullApi = trace "running api" $ getMyUser :<|> getPlayersOnly :<|> getTournamentsOnly :<|> getEvalResults :<|> getMoveSummary :<|> getDataSummary
     getMyUser = do
       user <- currentUserName auth
       users <- runPersist $ selectUser user
       return $ listToMaybe users
     getPlayersOnly = (fmap . fmap) entityVal getPlayers
+    getTournamentsOnly = getTournaments
+
+-- jsApi :: T.Text
+-- jsApi = jsForAPI api $ axios defAxiosOptions
 
 usId :: Maybe T.Text -> Int
 usId x = maybe 0 (read . T.unpack) x
@@ -255,9 +248,7 @@ serviceInit auth = makeSnaplet "chess" "Chess Service" Nothing $ do
   addRoutes $ chessRoutes auth
   return $ Service pg d
 
-chessRoutes auth = [
-    ("", serveSnap chessApi (apiServer auth))
-  , ("test", queryTest)]
+chessRoutes auth = [("", serveSnap chessApi (apiServer auth))]
 
 getUser :: SnapletLens b (AuthManager b) -> Handler b Service ()
 getUser auth = do
