@@ -10,7 +10,6 @@
 {-# LANGUAGE TemplateHaskell            #-}
 {-# LANGUAGE TypeFamilies               #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
-
 import qualified Database.Persist as Ps
 import qualified Database.Persist.Postgresql as PsP
 import qualified Data.ByteString.Char8 as B
@@ -37,7 +36,6 @@ import Text.RawString.QQ
 import Services.Types
 import Helpers
 import Options.Applicative
--- import Data.Semigroup ((<>))
 
 import qualified Chess.Pgn.Logic as Pgn
 import qualified Chess.Helpers as Helpers
@@ -51,6 +49,13 @@ import qualified Chess.Stockfish as Stockfish
 connString :: String -> String
 connString dbName = "host=localhost dbname=chess_" ++ dbName ++ " user=postgres"
 
+-- | The settings are obtained from the command line and determine
+-- how the data is stored.
+-- If the `settingsDelete` flag is set, all data is deleted from the database
+-- before data is read in.
+-- By default, data is not overwritten. If the program is stopped in the middle of inserting data
+-- then running it again should simply continue the data insertion.
+--
 data Settings = Settings { 
     settingsDBName :: String
   , settingsRunEval :: Bool
@@ -111,7 +116,6 @@ readerActions = do
   return ()
 
 numberOfGames = 200
-maxNumberPlayersShown = 2
 
 getDBType :: String -> IsTest
 getDBType "prod" = False
@@ -238,6 +242,20 @@ filterEvent _ = False
 
 keyReader = either entityKey id
 
+-- | Adds structured player ratings to the database.
+-- These ratings are already stored in raw format as part of the 
+-- `game_tag` table. Here, we turn this raw data into monthly player
+-- evaluations. 
+-- The monthly evaluation is simply the average of the player's raw rating
+-- over all games in a certain month. If a player has not played any games in 
+-- a certain month, the `player_rating` table will not contain any data for this month.
+-- If you are using this data to report player ratings graphs, you might
+-- want to fill in this missing time period with the latest preceding rating.
+
+addRatings :: DataResult ()
+addRatings = do
+  --
+
 storePlayers :: RequiredTags -> DataResult (Key Player, Key Player)
 storePlayers tags = do
   let (whitePlayer, blackPlayer) = (requiredWhitePlayer tags, requiredBlackPlayer tags)
@@ -252,6 +270,7 @@ storeTournament tags = do
   let (Pgn.PgnEvent eventName) = requiredEvent tags
   result <- Ps.insertBy $ Tournament eventName
   return $ keyReader result
+
 
 -- select where the game id cannot be found in move_eval
 

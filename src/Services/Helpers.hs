@@ -134,6 +134,8 @@ movesByPlayer res = (fmap . fmap) keepRelevant groupedWithColor
         groupedWithColor = M.mapWithKey addColor grouped -- Map (Key Player) [DataForMoveAverage]
         keepRelevant (gr, isWhite, (me, _)) = (gr, isWhite, PsP.entityVal me)
 
+
+
 data MoveSummary = MoveSummary {
     moveSummaryKey :: String
   , moveSummaryPlayer :: String

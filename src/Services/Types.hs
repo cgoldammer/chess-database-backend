@@ -39,6 +39,7 @@ Game json
   gameResult Int
   tournament TournamentId
   pgn String
+  date Day Maybe
   UniqueGame databaseId playerWhiteId playerBlackId tournament pgn
 
 GameAttribute json
@@ -59,6 +60,12 @@ Player json
   firstName String
   lastName String
   FullName firstName lastName
+
+PlayerRating json
+  playerId PlayerId
+  year Int
+  month Int
+  rating Int
 
 AppUser json
   userId Int
