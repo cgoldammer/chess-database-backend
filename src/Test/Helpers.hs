@@ -10,7 +10,7 @@
 {-# LANGUAGE TemplateHaskell            #-}
 {-# LANGUAGE TypeFamilies               #-}
 
-module Helpers (
+module Test.Helpers (
     inBackend
   , DataResult
   , formatForDB
@@ -44,7 +44,9 @@ deleteDBContents :: String -> IO ()
 deleteDBContents conn = inBackend conn $ do
   Ps.deleteWhere ([] :: [Ps.Filter MoveEval])
   Ps.deleteWhere ([] :: [Ps.Filter GameAttribute])
+  Ps.deleteWhere ([] :: [Ps.Filter PlayerRating])
   Ps.deleteWhere ([] :: [Ps.Filter Game])
+  Ps.deleteWhere ([] :: [Ps.Filter Tournament])
   Ps.deleteWhere ([] :: [Ps.Filter Player])
   Ps.deleteWhere ([] :: [Ps.Filter Database])
   return ()
@@ -56,4 +58,7 @@ formatForDB (Pgn.PgnDate s) = ("Date", s)
 formatForDB (Pgn.PgnRound s) = ("Round", show s)
 formatForDB (Pgn.PgnWhite player) = ("White", show player)
 formatForDB (Pgn.PgnBlack player) = ("White", show player)
+formatForDB (Pgn.PgnResult result) = ("White", show result)
+formatForDB (Pgn.PgnWhiteElo rating) = ("WhiteElo", show rating)
+formatForDB (Pgn.PgnBlackElo rating) = ("BlackElo", show rating)
 

@@ -1,14 +1,21 @@
 [Event "test"]
 [White "A, Anna"]
 [Black "B, Bertram"]
+[Date "2016.01.16"]
+[WhitePlayerElo "1500"]
+[BlackPlayerElo "1050"]
+[Other "test"]
 [Result "0-1"]
 
-1. e4 f5 2. ef5 d6 3. Qh5
+1. e4 f5 2. exf5 d6 3. Qh5+
 1-0
 
 [Event "test"]
 [White "B, Bertram"]
 [Black "A, Anna"]
+[Date "2017.01.16"]
+[WhitePlayerElo "2000"]
+[BlackPlayerElo "1700"]
 [Result "1-0"]
 
 1. e4 e5 2. d4 exd4 3. Nc3 dxc3 4. f4 cxb2 5. h4
@@ -17,6 +24,9 @@
 [Event "test"]
 [White "C, Conny"]
 [Black "A, Anna"]
+[Date "2016.01.16"]
+[WhitePlayerElo "2000"]
+[BlackPlayerElo "3000"]
 [Result "1/2-1/2"]
 
 1. e4 e5 2. d3 d6 3. c3 c6 4. a3 a6 5. h3 h6

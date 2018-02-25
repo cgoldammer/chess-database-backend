@@ -29,43 +29,34 @@ resolver: lts-7.15
 # A package marked 'extra-dep: true' will only be built if demanded by a
 # non-dependency (i.e. a user package), and its test suites and benchmarks
 # will not be run. This is useful for tweaking upstream packages.
-packages:
-  # - location: 
-  #     git: https://github.com/cgoldammer/snaplet-persistent
-  #     commit: 82bf95c89b3d53b6fb583250892505ed65d522d6
-  - location: 
-      git: https://github.com/cgoldammer/snaplet-postgresql-simple
-      commit: 24843652fd699bd79b67be79e53ceb94bbcd45df 
-    extra-dep: true
-  - location:
-      git: https://github.com/cgoldammer/esqueleto-1
-      commit: b8d4426f61a9d8734253a8bcd8728555082dd730
-    extra-dep: true
-  - location:
-      git: https://github.com/cgoldammer/snaplet-persistent
-      commit: c5a34ccc876c22508c90dee38c2345cb7789fbe8
-    extra-dep: true
-
-  - ../haskell-chess
-  - '.'
 # Dependency packages to be pulled from upstream that are not in the resolver
 # (e.g., acme-missiles-0.3)
 extra-deps: 
+  - ../haskell-chess
   - snap-1.0.0.0
   - heist-1.0.0.0
   - map-syntax-0.2.0.1
-  - snaplet-postgresql-simple-1.0.1
-  - snaplet-persistent-0.51
   - lens-tutorial-1.0.1
   - aeson-0.11.2.1
   - text-1.2.2.1
-  - MonadCatchIO-transformers-0.3.1.4
+  - MonadCatchIO-transformers-0.3.1.3
   - servant-snap-0.7.0.3
   - servant-0.8.1
   - Unique-0.4.6.1
-  - chess-0.1.0.0
-  - time-1.5.0.1
-  - esqueleto-2.5.1
+  - hspec-snap-1.0.0.2
+  - digestive-functors-0.8.2.0
+  - HUnit-1.6.0.0
+  - hspec-2.4.8
+  - hspec-discover-2.4.8
+  - hspec-expectations-0.8.2
+  - quickcheck-io-0.2.0
+  - hspec-core-2.4.8
+  - git: git://github.com/cgoldammer/snaplet-postgresql-simple
+    commit: 24843652fd699bd79b67be79e53ceb94bbcd45df 
+  - git: https://github.com/cgoldammer/esqueleto-1
+    commit: b8d4426f61a9d8734253a8bcd8728555082dd730
+  - git: https://github.com/cgoldammer/snaplet-persistent
+    commit: 25a0773f02e8bfa5b88b7685e1dd7a8b532f90ab
 
 # Override default flag values for local packages and extra-deps
 flags: {}

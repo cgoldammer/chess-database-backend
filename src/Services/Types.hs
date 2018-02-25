@@ -26,7 +26,15 @@ import Data.Aeson.Types
 share [mkPersist sqlSettings, mkMigrate "migrateAll"] [persistLowerCase|
 Database json
   name String
+  isPublic Bool
   UniqueDatabaseName name
+
+DatabasePermissions json
+  databaseId DatabaseId
+  userId Int
+  write Bool
+  read Bool
+  admin Bool
 
 Tournament json
   name String
@@ -66,13 +74,17 @@ PlayerRating json
   year Int
   month Int
   rating Int
+  UniqueRating playerId year month
 
 AppUser json
-  userId Int
+  userId String
   name String Maybe
   subscriptionTime UTCTime default=CURRENT_TIMESTAMP
   deriving Show
 |]
+
+instance Show Database
+  where show = show . toJSON
 
 instance Show MoveEval
   where show = show . toJSON

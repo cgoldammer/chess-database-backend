@@ -11,23 +11,7 @@ cabal-version:       >=1.10
 
 library
   hs-source-dirs:      src
-  exposed-modules: Services.Types, Services.Helpers
-  build-depends:
-    base                      >= 4     && < 5,
-    bytestring                >= 0.9.1 && < 0.11,
-    time,
-    persistent,
-    persistent-postgresql,
-    postgresql-simple,
-    persistent-template,
-    aeson,
-    containers,
-    lens
-
-Executable app
-  hs-source-dirs: src
-  default-language: Haskell2010
-  other-modules:     Application, Services.Service, Services.Types
+  exposed-modules: Application, Services.Service, Services.Types, Services.Helpers, Test.Helpers, Test.Fixtures
   build-depends:
     base                      >= 4     && < 5,
     bytestring                >= 0.9.1 && < 0.11,
@@ -37,6 +21,54 @@ Executable app
     snap-core                 >= 1.0   && < 1.1,
     snap-server               >= 1.0   && < 1.1,
     lens,
+    esqueleto,
+    chess,
+    either,
+    attoparsec,
+    comonad,
+    transformers,
+    lens-tutorial,
+    aeson,
+    text,
+    postgresql-simple,
+    time,
+    heist,
+    map-syntax,
+    string-conversions,
+    snap,
+    parsec,
+    containers,
+    persistent,
+    persistent-template,
+    persistent-postgresql,
+    servant-snap,
+    snaplet-persistent,
+    snaplet-postgresql-simple,
+    servant,
+    esqueleto,
+    resourcet,
+    conduit,
+    raw-strings-qq,
+    js-jquery,
+    monad-logger,
+    configurator
+
+
+
+Executable app
+  hs-source-dirs: src
+  default-language: Haskell2010
+  other-modules:     Application, Services.Service, Services.Types, Services.Helpers
+  build-depends:
+    base                      >= 4     && < 5,
+    bytestring                >= 0.9.1 && < 0.11,
+    monad-control             >= 1.0   && < 1.1,
+    mtl,
+    snap                      >= 1.0,
+    snap-core                 >= 1.0   && < 1.1,
+    snap-server               >= 1.0   && < 1.1,
+    lens,
+    attoparsec,
     comonad,
     lens-tutorial,
     aeson,
@@ -60,14 +92,15 @@ Executable app
     resourcet,
     conduit,
     raw-strings-qq,
-    js-jquery
+    js-jquery,
+    monad-logger,
+    configurator
   main-is: Main.hs
 
 
 Executable fill_db
   hs-source-dirs: test
   main-is: FillDB.hs
-  other-modules: Helpers
   default-language: Haskell2010
   build-depends:
       base
@@ -75,6 +108,7 @@ Executable fill_db
     , monad-logger
     , chess
     , persistent
+    , attoparsec
     , persistent-template
     , persistent-postgresql
     , time
@@ -97,11 +131,20 @@ test-suite backend-test
   build-depends:
       base
     , backend
-    , HUnit
     , turtle
+    , esqueleto
     , directory
     , time
     , text
+    , hspec
+    , hspec-snap
+    , snap-core
+    , snap
+    , bytestring
+    , snaplet-persistent
+    , persistent
+    , persistent-postgresql
+    , aeson
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N
   default-language:    Haskell2010
 
