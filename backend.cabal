@@ -11,7 +11,7 @@ cabal-version:       >=1.10
 
 library
   hs-source-dirs:      src
-  exposed-modules: Application, Services.Service, Services.Types, Services.Helpers, Test.Helpers, Test.Fixtures
+  exposed-modules: Application, Services.Service, Services.Types, Services.Helpers, Services.DatabaseHelpers, Test.Helpers, Test.Fixtures
   build-depends:
     base                      >= 4     && < 5,
     bytestring                >= 0.9.1 && < 0.11,
@@ -51,7 +51,9 @@ library
     raw-strings-qq,
     js-jquery,
     monad-logger,
-    configurator
+    configurator,
+    turtle,
+    system-filepath
 
 
 
@@ -70,6 +72,8 @@ Executable app
     lens,
     attoparsec,
     comonad,
+    either,
+    chess,
     lens-tutorial,
     aeson,
     text,
@@ -94,7 +98,10 @@ Executable app
     raw-strings-qq,
     js-jquery,
     monad-logger,
-    configurator
+    configurator,
+    turtle,
+    transformers,
+    system-filepath
   main-is: Main.hs
 
 
@@ -122,6 +129,7 @@ Executable fill_db
     , either
     , optparse-applicative
     , raw-strings-qq
+    , system-filepath
 
 test-suite backend-test
   type:                exitcode-stdio-1.0
@@ -145,6 +153,7 @@ test-suite backend-test
     , persistent
     , persistent-postgresql
     , aeson
+    , system-filepath
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N
   default-language:    Haskell2010
 

@@ -68,6 +68,7 @@ import qualified Database.Persist.Postgresql as PG
 import Data.Configurator as DC
 import Services.Types
 import qualified Services.Helpers as Helpers
+import qualified Services.DatabaseHelpers as DatabaseHelpers
 import qualified Control.Monad.State.Lazy as St
 
 type UserState = St.State (Maybe String) (Maybe String)
@@ -189,6 +190,7 @@ FROM numberTournaments
 CROSS JOIN numberGames
 CROSS JOIN numberGameEvals
 CROSS JOIN numberMoveEvals
+WHERE game.database=?
 |]
 
 type QueryType = (Single Int, Single Int, Single Int, Single Int)
@@ -196,7 +198,7 @@ type QueryType = (Single Int, Single Int, Single Int, Single Int)
 getDataSummary :: DefaultSearchData -> Handler b Service DataSummary
 getDataSummary searchData = do
   let db = searchDB searchData
-  results :: [QueryType] <- runPersist $ rawSql dataSummaryQuery []
+  results :: [QueryType] <- runPersist $ rawSql dataSummaryQuery [PersistInt64 (fromIntegral db)]
   let (Single numberTournaments, Single numberGames, Single numberGameEvals, Single numberMoveEvals) = head results
   return $ DataSummary numberTournaments numberGames numberGameEvals numberMoveEvals
 
@@ -279,6 +281,18 @@ type ChessApi m =
   :<|> "dataSummary" :> ReqBody '[JSON] DefaultSearchData :> Post '[JSON] DataSummary
   :<|> "resultPercentages" :> ReqBody '[JSON] DefaultSearchData :> Post '[JSON] [ResultPercentage]
   :<|> "games" :> ReqBody '[JSON] GameRequestData :> Post '[JSON] [GameDataFormatted]
+  :<|> "uploadDB" :> ReqBody '[JSON] UploadData :> Post '[JSON] UploadResult
+
+data UploadData = UploadData { uploadName :: String, uploadText :: T.Text } deriving (Generic, FromJSON)
+data UploadResult = UploadResult (Maybe Int) deriving (Generic, ToJSON)
+
+fakeDBName = "test"
+
+uploadDB :: UploadData -> Handler b Service UploadResult
+uploadDB upload = do
+  let (name, text) = (uploadName upload, uploadText upload)
+  results <- liftIO $ DatabaseHelpers.readTextIntoDB fakeDBName name text
+  return $ UploadResult $ Just $ length results
 
 data GameRequestData = GameRequestData {
     gameRequestDB :: Int
@@ -296,6 +310,7 @@ apiServer =      getMyUser
             :<|> getDataSummary
             :<|> getResultPercentages
             :<|> getGames
+            :<|> uploadDB
   where
     getTest = do
       return 1
@@ -410,7 +425,7 @@ chessRoutes = [("user2", writeBS "user test")] ++ [("", serveSnap chessApi apiSe
 createAppUser :: T.Text -> Handler b Service ()
 createAppUser userLogin = do
   time <- liftIO C.getCurrentTime
-  trace ("Creating user" ++ show userLogin) $ runPersist $ Ps.insert_ $ AppUser (T.unpack userLogin) Nothing time
+  runPersist $ Ps.insert_ $ AppUser (T.unpack userLogin) Nothing time
   return ()
 
 selectUser :: MonadIO m => Maybe T.Text -> SqlPersistT m [AppUser]

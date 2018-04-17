@@ -36,9 +36,12 @@ import qualified Data.Either.Combinators as EitherC
 import Debug.Trace
 import Text.RawString.QQ
 import qualified Data.Attoparsec.Text as Parsec
+import qualified Filesystem.Path.CurrentOS as FS
+import qualified Turtle as Tu
 
 import Services.Types
 import Test.Helpers as Helpers
+import Services.DatabaseHelpers as DatabaseHelpers
 
 import qualified Chess.Pgn.Logic as Pgn
 import qualified Chess.Logic as Logic
@@ -50,9 +53,6 @@ import qualified Chess.Stockfish as Stockfish
 
 -- The connection string is obtained from the command line
 -- Also, get settings for whether to create fake data.
-
-connString :: String -> String
-connString dbName = "host=localhost dbname=chess_" ++ dbName ++ " user=postgres"
 
 -- | The settings are obtained from the command line and determine
 -- how the data is stored.
@@ -97,8 +97,6 @@ readerActions = do
       if evaluate then do evaluateGames else doNothing'
   return ()
 
-numberOfGames = 200
-
 getDBType :: String -> IsTest
 getDBType "prod" = False
 getDBType _ = True
@@ -112,15 +110,17 @@ storeGamesIntoDB = do
   dbName <- reader settingsDBName
   mapM_ storeFileIntoDB $ getFiles $ getDBType dbName
 
+temp :: MonadIO m => m [Maybe (Ps.Key Game)]
+temp = undefined
+
 storeFileIntoDB :: (MonadReader Settings m, MonadIO m) => String -> m [Maybe (Ps.Key Game)]
 storeFileIntoDB fileName = do
   dbName <- reader settingsDBName
-  res <- liftIO $ inBackend (connString dbName) $ do
+  res :: [Maybe (Ps.Key Game)] <- liftIO $ inBackend (connString dbName) $ do
     dbResult <- Ps.insert (Database fileName True)
     let fullName = "./test/files/" ++ fileName
-    games :: [Pgn.ParsedGame] <- liftIO $ Pgn.getGames fullName numberOfGames
-    gameResults <- mapM (storeGameIntoDB dbResult) $ rights games
-    return gameResults
+    fileText :: Te.Text <- Tu.strict $ Tu.input $ FS.fromText $ Te.pack fullName
+    DatabaseHelpers.readTextIntoDB dbName fileName fileText
   return res
 
 evaluateGames :: (MonadReader Settings m, MonadIO m) => m ()
@@ -161,86 +161,7 @@ doEvaluation dbGame = do
       return []
   return keys
 
-resultDBFormat :: Pgn.PgnTag -> Int
-resultDBFormat (Pgn.PgnResult Pgn.WhiteWin) = 1
-resultDBFormat (Pgn.PgnResult Pgn.BlackWin) = -1
-resultDBFormat (Pgn.PgnResult Pgn.Draw) = 0
-resultDBFormat _ = 0
 
-getDate :: [Pgn.PgnTag] -> Maybe Day
-getDate tags = join $ fmap (\(Pgn.PgnDate d) -> EitherC.rightToMaybe (Parsec.parseOnly dateStringParse (Te.pack d))) $ listToMaybe $ filter filterDate tags
-
-dateStringParse :: Parsec.Parser Day
-dateStringParse = do
-  year <- Parsec.many' Parsec.digit
-  Parsec.char '.'
-  month <- Parsec.many' Parsec.digit
-  Parsec.char '.'
-  day <- Parsec.many' Parsec.digit
-  return $ fromGregorian (read year :: Integer) (read month :: Int) (read day :: Int)
-
-storeGameIntoDB :: Key Database -> Pgn.PgnGame -> DataResult (Maybe (Key Game))
-storeGameIntoDB dbResult g = do
-  let pgn = Pgn.gamePgnFull $ Pgn.parsedPgnGame g
-  let tags = (Pgn.pgnGameTags g) :: [Pgn.PgnTag]
-  let requiredTags = trace (show tags) $ parseRequiredTags tags
-  if isJust requiredTags 
-    then do
-      let parsedTags = fromJust requiredTags
-      (playerWhite, playerBlack) <- storePlayers parsedTags
-      tournament <- storeTournament parsedTags
-      let resultInt = resultDBFormat $ requiredResult parsedTags
-      let date = getDate tags -- Maybe Day
-      -- Storing the game
-      let gm = (Game dbResult playerWhite playerBlack resultInt tournament pgn date)
-      gameResult <- fmap keyReader $ Ps.insertBy gm
-      -- Storing the tags
-      let formattedTags = fmap formatForDB $ filter (not . isPlayer) tags
-      mapM_ (\(name, val) -> Ps.insert (GameAttribute gameResult name val)) formattedTags
-      addRatings
-      return $ Just gameResult
-    else do
-      return Nothing
-
-data RequiredTags = RequiredTags {
-    requiredWhitePlayer :: Pgn.PgnTag
-  , requiredBlackPlayer :: Pgn.PgnTag
-  , requiredResult :: Pgn.PgnTag
-  , requiredEvent :: Pgn.PgnTag}
-
-parseRequiredTags :: [Pgn.PgnTag] -> Maybe RequiredTags
-parseRequiredTags tags = RequiredTags <$> maybeWhite <*> maybeBlack <*> maybeResult <*> maybeEvent
-  where maybeWhite = Helpers.safeHead $ filter filterWhitePlayer tags
-        maybeBlack = Helpers.safeHead $ filter filterBlackPlayer tags
-        maybeResult = Helpers.safeHead $ filter filterResult tags
-        maybeEvent = Helpers.safeHead $ filter filterEvent tags
-  
-isPlayer :: Pgn.PgnTag -> Bool
-isPlayer (Pgn.PgnWhite _) = True
-isPlayer (Pgn.PgnBlack _) = True
-isPlayer _ = False
-
-filterWhitePlayer :: Pgn.PgnTag -> Bool
-filterWhitePlayer (Pgn.PgnWhite _) = True
-filterWhitePlayer _ = False
-
-filterBlackPlayer :: Pgn.PgnTag -> Bool
-filterBlackPlayer (Pgn.PgnBlack _) = True
-filterBlackPlayer _ = False
-
-filterResult :: Pgn.PgnTag -> Bool
-filterResult (Pgn.PgnResult _) = True
-filterResult _ = False
-
-filterEvent :: Pgn.PgnTag -> Bool
-filterEvent (Pgn.PgnEvent _) = True
-filterEvent _ = False
-
-filterDate :: Pgn.PgnTag -> Bool
-filterDate (Pgn.PgnDate _) = True
-filterDate _ = False
-
-keyReader = either entityKey id
 
 -- | Adds structured player ratings to the database.
 -- These ratings are already stored in raw format as part of the 
@@ -281,22 +202,6 @@ addRatings = do
   return ()
  
 
-storePlayers :: RequiredTags -> DataResult (Key Player, Key Player)
-storePlayers tags = do
-  let (whitePlayer, blackPlayer) = (requiredWhitePlayer tags, requiredBlackPlayer tags)
-  let (Pgn.PgnWhite (Pgn.Player firstWhite lastWhite)) = whitePlayer
-  let (Pgn.PgnBlack (Pgn.Player firstBlack lastBlack)) = blackPlayer
-  whiteResult <- Ps.insertBy (Player firstWhite lastWhite)
-  blackResult <- Ps.insertBy (Player firstBlack lastBlack)
-  return (keyReader whiteResult, keyReader blackResult)
-
-storeTournament :: RequiredTags -> DataResult (Key Tournament)
-storeTournament tags = do
-  let (Pgn.PgnEvent eventName) = requiredEvent tags
-  result <- Ps.insertBy $ Tournament eventName
-  return $ keyReader result
-
-
 -- select where the game id cannot be found in move_eval
 
 sqlGamesAll = [r|
@@ -315,7 +220,7 @@ getGamesFromDB :: Bool -> DataResult [Entity Game]
 getGamesFromDB continueEval = do
   let query = if continueEval then sqlGamesUnevaluated else sqlGamesAll
   games :: [Entity Game] <- rawSql query []
-  games <- Ps.selectList [] [LimitTo numberOfGames]
+  games <- Ps.selectList [] []
   return games
 
 evalToRow :: Key Game -> [Pgn.MoveSummary] -> [MoveEval]

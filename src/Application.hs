@@ -80,10 +80,14 @@ handleLogins authError = heistLocal (I.bindSplices errs) $ render "login_results
   where
       errs = "loginError" ## I.textSplice authError
 
+
+nothingHandler :: Handler App (AuthManager App) ()
+nothingHandler = do
+  return ()
+
 handleLoginSubmit :: Handler App (AuthManager App) ()
 handleLoginSubmit = do
-  us <- loginUser "login" "password" Nothing (\err -> writeBS (B.pack ("Error: " ++ show err))) (redirect "/test")
-
+  us <- loginUser "email" "password" Nothing (\err -> writeBS (B.pack ("Error: " ++ show err))) nothingHandler
   user <- currentUser
   let login = fmap (T.unpack . userLogin) user
   withTop service $ S.changeUser login
@@ -102,7 +106,7 @@ registerEvent (Left x) = T.pack $ show x
 registerEvent (Right x) = T.pack ""
 
 registerNew :: Handler App (AuthManager App) (Either AuthFailure AuthUser) 
-registerNew = method POST $ registerUser "login" "password"
+registerNew = method POST $ registerUser "email" "password"
 
 handleNewUser :: Handler App (AuthManager App) ()
 handleNewUser = do 

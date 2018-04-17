@@ -65,6 +65,7 @@ MoveEval json
   mate Int Maybe
 
 Player json
+
   firstName String
   lastName String
   FullName firstName lastName

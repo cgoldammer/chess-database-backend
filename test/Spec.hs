@@ -145,6 +145,7 @@ testApi = Test.snap (route S.chessRoutes) (S.serviceInit dbName) $ beforeAll_ do
         res <- Test.post "/games" requestData
         let values = maybe [] id $ parseGameData res
         Test.shouldEqual (L.length values) 0
+
       it "it does return values for a database that has games" $ do
         dbDatabases :: [Entity Database] <- liftIO $ H.inBackend (Fix.connString dbName) $ do
           selectList [] []
