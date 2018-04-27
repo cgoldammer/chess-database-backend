@@ -116,11 +116,11 @@ temp = undefined
 storeFileIntoDB :: (MonadReader Settings m, MonadIO m) => String -> m [Maybe (Ps.Key Game)]
 storeFileIntoDB fileName = do
   dbName <- reader settingsDBName
-  res :: [Maybe (Ps.Key Game)] <- liftIO $ inBackend (connString dbName) $ do
+  (_, res) :: (Key Database, [Maybe (Ps.Key Game)]) <- liftIO $ inBackend (connString dbName) $ do
     dbResult <- Ps.insert (Database fileName True)
     let fullName = "./test/files/" ++ fileName
     fileText :: Te.Text <- Tu.strict $ Tu.input $ FS.fromText $ Te.pack fullName
-    DatabaseHelpers.readTextIntoDB dbName fileName fileText
+    DatabaseHelpers.readTextIntoDB dbName fileName fileText True
   return res
 
 evaluateGames :: (MonadReader Settings m, MonadIO m) => m ()
@@ -146,13 +146,25 @@ evaluateGamesTest = do
   evaluateGamesReal
   return ()
 
+-- Evaluate a single game, if provided with a flag, then don't run the evaluation
+-- if the game is already evaluated.
+-- evaluateSingleGame :: MonadIO m => Entity Game -> Bool -> Maybe [Key MoveEval]
+-- -- evaluateSingleGame dbGame redoEvaluation = undefined
+-- evaluateSingleGame = undefined
+
+
 doEvaluation :: (MonadReader Settings m, MonadIO m) => Entity Game -> m [Key MoveEval]
-doEvaluation dbGame = do
-  let maybeGame = dbGameToPGN $ entityVal $ dbGame
+doEvaluation dbGame  = do
+  dbName <- reader settingsDBName
+  doAndStoreEvaluationIO dbName dbGame
+
+
+doAndStoreEvaluationIO :: MonadIO m => String -> Entity Game -> m [Key MoveEval]
+doAndStoreEvaluationIO dbName dbGame = do
+  let maybeGame = trace "Storing evaluations for game" $ dbGameToPGN $ entityVal dbGame
   keys <- case maybeGame of 
     (Just game) -> do
       summaries <- liftIO $ Pgn.gameSummaries game
-      dbName <- reader settingsDBName
       keys <- liftIO $ inBackend (connString dbName) $ do
         k <- Ps.insertMany $ evalToRow (entityKey dbGame) summaries
         return k
@@ -195,7 +207,7 @@ intToKey = toSqlKey . fromIntegral
 readRatingQuery :: RatingQueryType -> PlayerRating
 readRatingQuery (Single player_id, Single year, Single month, Single rating) = PlayerRating (intToKey player_id) year month rating
 
-addRatings :: DataResult ()
+addRatings :: DataAction ()
 addRatings = do
   results :: [RatingQueryType] <- rawSql ratingQuery []
   mapM_ (Ps.insertBy . readRatingQuery) results
@@ -216,7 +228,8 @@ WHERE game.id not in (SELECT DISTINCT game_id from move_eval)
 |]
 
 
-getGamesFromDB :: Bool -> DataResult [Entity Game]
+
+getGamesFromDB :: Bool -> DataAction [Entity Game]
 getGamesFromDB continueEval = do
   let query = if continueEval then sqlGamesUnevaluated else sqlGamesAll
   games :: [Entity Game] <- rawSql query []

@@ -12,7 +12,7 @@
 
 module Test.Helpers (
     inBackend
-  , DataResult
+  , DataAction
   , formatForDB
   , deleteDBContents)
 where
@@ -32,13 +32,22 @@ import qualified Chess.Pgn.Logic as Pgn
 -- See https://stackoverflow.com/questions/34624469/crud-pattern-on-haskell-persistent
 --
 --
-type DataResult a = ReaderT PsP.SqlBackend (NoLoggingT (ResourceT IO)) a
+type DataAction a = ReaderT PsP.SqlBackend (NoLoggingT (ResourceT IO)) a
 
-inBackend :: String -> DataResult a -> IO a
+inBackend :: String -> DataAction a -> IO a
 inBackend conn action = runStderrLoggingT $ PsP.withPostgresqlPool (B.pack conn) 10 $ \pool -> liftIO $ do
   flip PsP.runSqlPersistMPool pool $ do
     PsP.runMigration migrateAll
     action
+
+-- | Run a database action (taken from snaplet-persistent)
+withPool :: MonadIO m
+         => PsP.ConnectionPool
+         -> PsP.SqlPersistM a -> m a
+withPool cp f = liftIO . runResourceT . runNoLoggingT $ PsP.runSqlPool f cp
+
+-- My goal: Use the `HasPersistPool` typeclass for all database actions. That
+-- unifies the code I run in Snap and in the general IO Monad
 
 deleteDBContents :: String -> IO ()
 deleteDBContents conn = inBackend conn $ do

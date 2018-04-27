@@ -70,6 +70,8 @@ import Services.Types
 import qualified Services.Helpers as Helpers
 import qualified Services.DatabaseHelpers as DatabaseHelpers
 import qualified Control.Monad.State.Lazy as St
+import qualified Test.Fixtures as TF
+import qualified Test.Helpers as TH
 
 type UserState = St.State (Maybe String) (Maybe String)
 
@@ -144,11 +146,20 @@ getPlayers searchData = runPersist $ do
   return players
 
 getDatabases :: Handler b Service [Entity Database]
-getDatabases = runPersist $ do
-  databases <- select $
-    from $ \db -> do
-      return db
-  return databases
+getDatabases = do
+  currentUser :: Maybe String <- currentUserName
+  dbs <- runPersist $ do
+    let searchUser = maybe "" id currentUser
+    let searchCondition db dbp = if not (isJust currentUser) then val False else ((db^.DatabaseIsPublic ==. val False) &&. (dbp^.DatabasePermissionUserId ==. val searchUser) &&. (dbp^.DatabasePermissionRead ==. val True))
+    let mergeCondition db dbp = dbp^.DatabasePermissionDatabaseId ==. db^.DatabaseId
+    databases <- select $ distinct $ 
+      from $ \(db, dbp) -> do
+        where_ $ (db^.DatabaseIsPublic) ||. (((mergeCondition db dbp) &&. (searchCondition db dbp)))
+        return db
+    return databases
+  return dbs
+  
+
 
 getTournaments :: DefaultSearchData -> Handler b Service [Entity Tournament]
 getTournaments searchData = runPersist $ do
@@ -175,22 +186,26 @@ data DataSummary = DataSummary {
 
 dataSummaryQuery = [r|
 WITH 
-    numberTournaments as (SELECT count(distinct id) as "numberTournaments" FROM tournament )
-  , numberGames as (SELECT count(distinct id) as "numberGames" FROM game)
+    numberTournaments as (SELECT count(distinct id) as "numberTournaments" FROM tournament where database_id=?)
+  , numberGames as (SELECT count(distinct id) as "numberGames" FROM game where database_id=?)
   , numberGameEvals as (
       SELECT count(distinct id) as "numberGameEvals" FROM (
           SELECT id FROM game WHERE id in (
             SELECT DISTINCT game_id FROM move_eval
-          )
+          ) and game.database_id=?
       ) as numberGameEvals
     )
-  , numberMoveEvals as (SELECT count(*) as "numberMoveEvals" FROM move_eval)
+  , numberMoveEvals as (
+      SELECT count(*) as "numberMoveEvals" 
+      FROM move_eval
+      JOIN game on move_eval.game_id = game.id
+      WHERE game.database_id=?
+    )
 SELECT * 
 FROM numberTournaments
 CROSS JOIN numberGames
 CROSS JOIN numberGameEvals
 CROSS JOIN numberMoveEvals
-WHERE game.database=?
 |]
 
 type QueryType = (Single Int, Single Int, Single Int, Single Int)
@@ -198,7 +213,8 @@ type QueryType = (Single Int, Single Int, Single Int, Single Int)
 getDataSummary :: DefaultSearchData -> Handler b Service DataSummary
 getDataSummary searchData = do
   let db = searchDB searchData
-  results :: [QueryType] <- runPersist $ rawSql dataSummaryQuery [PersistInt64 (fromIntegral db)]
+  let arguments = take 4 $ repeat $ PersistInt64 (fromIntegral db)
+  results :: [QueryType] <- runPersist $ rawSql dataSummaryQuery arguments
   let (Single numberTournaments, Single numberGames, Single numberGameEvals, Single numberMoveEvals) = head results
   return $ DataSummary numberTournaments numberGames numberGameEvals numberMoveEvals
 
@@ -282,17 +298,60 @@ type ChessApi m =
   :<|> "resultPercentages" :> ReqBody '[JSON] DefaultSearchData :> Post '[JSON] [ResultPercentage]
   :<|> "games" :> ReqBody '[JSON] GameRequestData :> Post '[JSON] [GameDataFormatted]
   :<|> "uploadDB" :> ReqBody '[JSON] UploadData :> Post '[JSON] UploadResult
+  :<|> "addEvaluations" :> ReqBody '[JSON] EvaluationRequest :> Post '[JSON] EvaluationResult 
+  :<|> "getResultByEvaluation" :> ReqBody 'JSON GameList :> Post '[JSON] 
+
+data GameList = [Int]
+
+data
+
+getResultByEvaluation = undefined
 
 data UploadData = UploadData { uploadName :: String, uploadText :: T.Text } deriving (Generic, FromJSON)
 data UploadResult = UploadResult (Maybe Int) deriving (Generic, ToJSON)
 
+data EvaluationRequest = EvaluationRequest { evaluationDB :: Int, evaluationOverwrite :: Bool } deriving (Generic, FromJSON)
+type EvaluationResult = Int
+
 fakeDBName = "test"
+
+addEvaluations :: EvaluationRequest -> Handler b Service EvaluationResult
+addEvaluations request = do
+  let dbKey = intToKeyDB $ evaluationDB request
+  let overwrite = evaluationOverwrite request
+  games :: [Entity Game] <- liftIO $ gamesInDB dbKey overwrite
+  evaluations <- liftIO $ do
+    evals :: [[Key MoveEval]] <- sequenceA $ fmap (TF.doAndStoreEvaluationIO fakeDBName) games
+    return evals
+  return $ length $ concat evaluations
+
+gamesInDB :: Key Database -> Bool -> IO [Entity Game]
+gamesInDB dbKey overwrite = TH.inBackend (DatabaseHelpers.connString fakeDBName) $ do
+  let db = val dbKey
+  evaluatedGames :: [Entity Game] <- select $ distinct $
+    from $ \(g, me) -> do
+      where_ $ (me ^. MoveEvalGameId ==. g^.GameId) &&. (g^.GameDatabaseId ==. db)
+      return g
+  allGames :: [Entity Game] <- select $ distinct $ 
+    from $ \g  -> do
+      where_ (g^.GameDatabaseId ==. db)
+      return g
+  let evaluatedIds = (fmap entityKey evaluatedGames) :: [Key Game]
+  let difference = [g | g <- allGames, not (entityKey g `elem` evaluatedIds)]
+  return $ if overwrite then allGames else difference
 
 uploadDB :: UploadData -> Handler b Service UploadResult
 uploadDB upload = do
   let (name, text) = (uploadName upload, uploadText upload)
-  results <- liftIO $ DatabaseHelpers.readTextIntoDB fakeDBName name text
+  (db, results) <- liftIO $ DatabaseHelpers.readTextIntoDB fakeDBName name text False
+  currentUser :: Maybe String <- currentUserName
+  addDBPermission db currentUser
   return $ UploadResult $ Just $ length results
+
+addDBPermission :: Key Database -> Maybe String -> Handler b Service (Key DatabasePermission)
+addDBPermission dbResult userName = do
+  permission <- runPersist $ Ps.insert $ DatabasePermission dbResult (maybe "" id userName) True True False
+  return permission
 
 data GameRequestData = GameRequestData {
     gameRequestDB :: Int
@@ -311,6 +370,8 @@ apiServer =      getMyUser
             :<|> getResultPercentages
             :<|> getGames
             :<|> uploadDB
+            :<|> addEvaluations
+            :<|> getResultByEvaluation
   where
     getTest = do
       return 1

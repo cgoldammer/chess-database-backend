@@ -29,16 +29,18 @@ Database json
   isPublic Bool
   UniqueDatabaseName name
 
-DatabasePermissions json
+DatabasePermission json
   databaseId DatabaseId
-  userId Int
+  userId String
   write Bool
   read Bool
   admin Bool
+  UniqueDatabasePermission databaseId userId
 
 Tournament json
+  databaseId DatabaseId
   name String
-  UniqueTournamentName name
+  UniqueTournamentName databaseId name
 
 Game json
   databaseId DatabaseId
@@ -65,10 +67,10 @@ MoveEval json
   mate Int Maybe
 
 Player json
-
+  databaseId DatabaseId
   firstName String
   lastName String
-  FullName firstName lastName
+  FullName databaseId firstName lastName
 
 PlayerRating json
   playerId PlayerId

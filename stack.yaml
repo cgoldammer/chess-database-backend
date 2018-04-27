@@ -51,12 +51,14 @@ extra-deps:
   - hspec-expectations-0.8.2
   - quickcheck-io-0.2.0
   - hspec-core-2.4.8
+  - esqueleto-2.5.3
+  - snaplet-persistent-0.6.0
   - git: git://github.com/cgoldammer/snaplet-postgresql-simple
     commit: 24843652fd699bd79b67be79e53ceb94bbcd45df 
-  - git: https://github.com/cgoldammer/esqueleto-1
-    commit: b8d4426f61a9d8734253a8bcd8728555082dd730
-  - git: https://github.com/cgoldammer/snaplet-persistent
-    commit: 25a0773f02e8bfa5b88b7685e1dd7a8b532f90ab
+  # - git: https://github.com/cgoldammer/esqueleto-1
+  #   commit: b8d4426f61a9d8734253a8bcd8728555082dd730
+  # - git: https://github.com/cgoldammer/snaplet-persistent
+  #   commit: 25a0773f02e8bfa5b88b7685e1dd7a8b532f90ab
 
 # Override default flag values for local packages and extra-deps
 flags: {}
