@@ -32,11 +32,12 @@ import Snap.Snaplet.PostgresqlSimple
 import Data.Char as C
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as BL
+import qualified Data.Text.Lazy as TL
 import Snap.Snaplet.Auth
 import Data.List
-import Snap.Snaplet.Persistent
 import Control.Exception (try)
 import qualified Data.Text as T
+import qualified Data.Text.Template as Template
 import Control.Monad
 import Language.Javascript.JQuery
 
@@ -110,15 +111,6 @@ currentUserName = do
   user <- liftIO $ readIORef nameRef
   return user
 
--- currentUserName :: SnapletLens b (AuthManager b) -> Handler b Service (Maybe (T.Text))
--- currentUserName auth = do
---     cu <- withTop auth $ do
---       u <- currentUser
---       return u
---     return $ fmap userLogin cu
-
--- getCurrentUserName :: Maybe AuthUser -> Maybe T.Text
--- getCurrentUserName = fmap userLogin a
 
 data ImpMove = ImpMove { impMove :: String, impBest :: String, impWhite :: String, impBlack :: String, impMoveEval :: String, impBestEval :: String } deriving (Generic, FromJSON, ToJSON)
 
@@ -149,14 +141,17 @@ getDatabases :: Handler b Service [Entity Database]
 getDatabases = do
   currentUser :: Maybe String <- currentUserName
   dbs <- runPersist $ do
-    let searchUser = maybe "" id currentUser
-    let searchCondition db dbp = if not (isJust currentUser) then val False else ((db^.DatabaseIsPublic ==. val False) &&. (dbp^.DatabasePermissionUserId ==. val searchUser) &&. (dbp^.DatabasePermissionRead ==. val True))
+    dbsPublic <- select $ from $ \db -> do
+      where_ (db^.DatabaseIsPublic)
+      return db
+    let searchUser = maybe "NOUSER" id currentUser
+    let searchCondition db dbp = (dbp^.DatabasePermissionUserId ==. (val searchUser)) &&. (dbp^.DatabasePermissionRead ==. (val True))
     let mergeCondition db dbp = dbp^.DatabasePermissionDatabaseId ==. db^.DatabaseId
-    databases <- select $ distinct $ 
+    dbsPersonal <- select $ distinct $ 
       from $ \(db, dbp) -> do
-        where_ $ (db^.DatabaseIsPublic) ||. (((mergeCondition db dbp) &&. (searchCondition db dbp)))
+        where_ $ (mergeCondition db dbp) &&. (searchCondition db dbp)
         return db
-    return databases
+    return $ dbsPublic ++ dbsPersonal
   return dbs
   
 
@@ -268,13 +263,8 @@ queryTest :: Handler b Service ()
 queryTest = do
   let sql = "SELECT game_id, (1 - game_id) FROM game_attribute"
   res :: [T] <- runPersist $ rawSql sql []
-  liftIO $ print $ fmap useRes res
   writeLBS . encode $ fmap useRes res
   return ()
-
-
-chessApi :: Proxy (ChessApi (Handler b Service))
-chessApi = Proxy
 
 data MoveRequestData = MoveRequestData {moveRequestDB :: Int, moveRequestTournaments :: [Int] } deriving (Generic, FromJSON, ToJSON, Show)
 
@@ -285,6 +275,153 @@ data ResultPercentage = ResultPercentage {
   , drawPercentage :: Int} deriving (Generic, FromJSON, ToJSON, Show)
 
 data DefaultSearchData = DefaultSearchData { searchDB :: Int } deriving (Generic, FromJSON, ToJSON, Show)
+
+
+type GameList = [Int]
+type GameEvaluation = Int
+type Performance = Int
+type ResultByEvaluation = [(Int, [(GameEvaluation, Performance)])]
+type TT = M.Map Int [GameEvaluation] -- deriving (Generic, ToJSON)
+
+
+parseEvalResults :: (Single Int, Single Int, Single Int, Single Int) -> (Int, GameEvaluation, Performance)
+parseEvalResults (_, Single playerId, Single evaluation, Single result) = (playerId, evaluation, result)
+
+
+toList :: (Single Int, Single Int) -> Int
+toList (Single a, _) = a
+
+listToInClause :: [Int] -> String
+listToInClause ints = clause
+  where intStrings = (fmap show ints) :: [String]
+        clause = "(" ++ (intercalate ", " intStrings) ++ ")"
+
+
+
+
+
+
+
+
+
+
+-- The evaluation of a move is eval - lag(eval, 1) by game. Top-code at 0.
+-- then average by game and color.
+-- After that, merge onto the game table and obtain the performance by each player.
+
+viewQuery :: T.Text
+viewQuery = [r|
+CREATE OR REPLACE VIEW moveevals as (
+  SELECT game_id, is_white, move_number, greatest(eval - next_eval, 0) as cploss FROM (
+    SELECT game_id, is_white, move_number, eval, lead(eval) over (partition by game_id order by id) as next_eval
+    FROM move_eval) as lags);
+|]
+
+evalQueryTemplate :: T.Text
+evalQueryTemplate = [r|
+  WITH me_player as (
+    SELECT g.id as game_id, player_white_id, player_black_id, is_white, cploss, game_result
+    FROM moveevals me
+    JOIN game g
+    ON me.game_id = g.id
+    WHERE g.id in $gameList
+  )
+  SELECT game_id, player_white_id as player_id, avg(cploss)::Int as cploss, avg((game_result+1)/2*100)::Int as result from me_player WHERE is_white group by game_id, player_white_id
+  UNION ALL
+  SELECT game_id, player_black_id as player_id, avg(cploss)::Int as cploss, avg((-game_result+1)/2*100)::Int as result from me_player WHERE not is_white group by game_id, player_black_id;
+|]
+
+testQueryTemplate = [r| SELECT id, id from game where id in $c|]
+
+testQueryString :: [Int] -> T.Text
+testQueryString ints = TL.toStrict $ Template.substitute testQueryTemplate cont
+  where cont = context [("c", listToInClause ints)]
+
+evalQueryString :: [Int] -> T.Text
+evalQueryString ints = TL.toStrict $ Template.substitute evalQueryTemplate cont
+  where cont = context [("gameList", listToInClause ints)]
+
+-- | Create 'Context' from association list.
+context :: [(String, String)] -> Template.Context
+context assocs x = T.pack $ maybe err id . L.lookup (T.unpack x) $ assocs
+  where err = error $ "Could not find key: " ++ T.unpack x
+
+testQuery :: Handler b Service [Int]
+testQuery = do
+  let vals = take 100 $ [0..100]
+  results <- trace (T.unpack (testQueryString vals)) $ runPersist $ rawSql (testQueryString vals) []
+  return $ fmap toList $ results
+
+getResultByEvaluation :: GameList -> Handler b Service ResultByEvaluation
+getResultByEvaluation gl = do
+  runPersist $ rawExecute viewQuery []
+  results <- runPersist $ rawSql (evalQueryString gl) []
+  let parsed = fmap parseEvalResults results
+  let grouped = (fmap . fmap) (\(_, b, c) -> (b, c)) $ Helpers.groupWithVal (\(a, _, _) -> a) parsed
+  return $ M.toList grouped
+
+
+
+data UploadData = UploadData { uploadName :: String, uploadText :: T.Text } deriving (Generic, FromJSON)
+data UploadResult = UploadResult (Maybe Int) deriving (Generic, ToJSON)
+
+data EvaluationRequest = EvaluationRequest { evaluationDB :: Int, evaluationOverwrite :: Bool } deriving (Generic, FromJSON)
+type EvaluationResult = Int
+
+
+addEvaluations :: EvaluationRequest -> Handler b Service EvaluationResult
+addEvaluations request = do
+  let dbKey = intToKeyDB $ evaluationDB request
+  let overwrite = evaluationOverwrite request
+  dbName <- getDBName
+  games :: [Entity Game] <- liftIO $ gamesInDB dbName dbKey overwrite
+  evaluations <- liftIO $ do
+    evals :: [[Key MoveEval]] <- sequenceA $ fmap (TF.doAndStoreEvaluationIO dbName) games
+    return evals
+  return $ length $ concat evaluations
+
+gamesInDB :: String -> Key Database -> Bool -> IO [Entity Game]
+gamesInDB dbName dbKey overwrite = TH.inBackend (DatabaseHelpers.connString dbName) $ do
+  let db = val dbKey
+  evaluatedGames :: [Entity Game] <- select $ distinct $
+    from $ \(g, me) -> do
+      where_ $ (me ^. MoveEvalGameId ==. g^.GameId) &&. (g^.GameDatabaseId ==. db)
+      return g
+  allGames :: [Entity Game] <- select $ distinct $ 
+    from $ \g  -> do
+      where_ (g^.GameDatabaseId ==. db)
+      return g
+  let evaluatedIds = (fmap entityKey evaluatedGames) :: [Key Game]
+  let difference = [g | g <- allGames, not (entityKey g `elem` evaluatedIds)]
+  return $ if overwrite then allGames else difference
+
+
+getDBName :: Handler b Service String
+getDBName = do
+  conf <- getSnapletUserConfig
+  dbNameMaybe :: Maybe String <- liftIO $ DC.lookup conf "dbName"
+  let dbName = maybe "dev" id dbNameMaybe
+  return dbName
+
+
+uploadDB :: UploadData -> Handler b Service UploadResult
+uploadDB upload = do
+  let (name, text) = (uploadName upload, uploadText upload)
+  dbName <- getDBName
+  (db, results) <- liftIO $ DatabaseHelpers.readTextIntoDB dbName name text False
+  currentUser :: Maybe String <- currentUserName
+  addDBPermission db currentUser
+  return $ UploadResult $ Just $ length results
+
+addDBPermission :: Key Database -> Maybe String -> Handler b Service (Key DatabasePermission)
+addDBPermission dbResult userName = do
+  permission <- runPersist $ Ps.insert $ DatabasePermission dbResult (maybe "" id userName) True True False
+  return permission
+
+data GameRequestData = GameRequestData {
+    gameRequestDB :: Int
+  , gameRequestTournaments :: [Int]
+} deriving (Generic, FromJSON, ToJSON)
 
 type ChessApi m = 
        "user"     :> Get '[JSON] (Maybe AppUser) 
@@ -299,64 +436,12 @@ type ChessApi m =
   :<|> "games" :> ReqBody '[JSON] GameRequestData :> Post '[JSON] [GameDataFormatted]
   :<|> "uploadDB" :> ReqBody '[JSON] UploadData :> Post '[JSON] UploadResult
   :<|> "addEvaluations" :> ReqBody '[JSON] EvaluationRequest :> Post '[JSON] EvaluationResult 
-  :<|> "getResultByEvaluation" :> ReqBody 'JSON GameList :> Post '[JSON] 
+  :<|> "getResultByEvaluation" :> ReqBody '[JSON] GameList :> Post '[JSON] ResultByEvaluation
+  :<|> "testQuery" :> Get '[JSON] [Int]
 
-data GameList = [Int]
+chessApi :: Proxy (ChessApi (Handler b Service))
+chessApi = Proxy
 
-data
-
-getResultByEvaluation = undefined
-
-data UploadData = UploadData { uploadName :: String, uploadText :: T.Text } deriving (Generic, FromJSON)
-data UploadResult = UploadResult (Maybe Int) deriving (Generic, ToJSON)
-
-data EvaluationRequest = EvaluationRequest { evaluationDB :: Int, evaluationOverwrite :: Bool } deriving (Generic, FromJSON)
-type EvaluationResult = Int
-
-fakeDBName = "test"
-
-addEvaluations :: EvaluationRequest -> Handler b Service EvaluationResult
-addEvaluations request = do
-  let dbKey = intToKeyDB $ evaluationDB request
-  let overwrite = evaluationOverwrite request
-  games :: [Entity Game] <- liftIO $ gamesInDB dbKey overwrite
-  evaluations <- liftIO $ do
-    evals :: [[Key MoveEval]] <- sequenceA $ fmap (TF.doAndStoreEvaluationIO fakeDBName) games
-    return evals
-  return $ length $ concat evaluations
-
-gamesInDB :: Key Database -> Bool -> IO [Entity Game]
-gamesInDB dbKey overwrite = TH.inBackend (DatabaseHelpers.connString fakeDBName) $ do
-  let db = val dbKey
-  evaluatedGames :: [Entity Game] <- select $ distinct $
-    from $ \(g, me) -> do
-      where_ $ (me ^. MoveEvalGameId ==. g^.GameId) &&. (g^.GameDatabaseId ==. db)
-      return g
-  allGames :: [Entity Game] <- select $ distinct $ 
-    from $ \g  -> do
-      where_ (g^.GameDatabaseId ==. db)
-      return g
-  let evaluatedIds = (fmap entityKey evaluatedGames) :: [Key Game]
-  let difference = [g | g <- allGames, not (entityKey g `elem` evaluatedIds)]
-  return $ if overwrite then allGames else difference
-
-uploadDB :: UploadData -> Handler b Service UploadResult
-uploadDB upload = do
-  let (name, text) = (uploadName upload, uploadText upload)
-  (db, results) <- liftIO $ DatabaseHelpers.readTextIntoDB fakeDBName name text False
-  currentUser :: Maybe String <- currentUserName
-  addDBPermission db currentUser
-  return $ UploadResult $ Just $ length results
-
-addDBPermission :: Key Database -> Maybe String -> Handler b Service (Key DatabasePermission)
-addDBPermission dbResult userName = do
-  permission <- runPersist $ Ps.insert $ DatabasePermission dbResult (maybe "" id userName) True True False
-  return permission
-
-data GameRequestData = GameRequestData {
-    gameRequestDB :: Int
-  , gameRequestTournaments :: [Int]
-} deriving (Generic, FromJSON, ToJSON)
 
 apiServer :: Server (ChessApi (Handler b Service)) (Handler b Service)
 apiServer =      getMyUser 
@@ -372,6 +457,7 @@ apiServer =      getMyUser
             :<|> uploadDB
             :<|> addEvaluations
             :<|> getResultByEvaluation
+            :<|> testQuery
   where
     getTest = do
       return 1
@@ -420,7 +506,19 @@ data GameDataFormatted = GameDataFormatted {
   , gameDataAttributes :: [Entity GameAttribute]} deriving (Generic, FromJSON, ToJSON)
 
 getGames :: GameRequestData -> Handler b Service [GameDataFormatted]
-getGames requestData = fmap gameGrouper $ runPersist $ getGames' requestData
+getGames requestData = do
+  user <- currentUserName
+  let dbKey = intToKeyDB $ gameRequestDB requestData
+  db :: Maybe Database <- runPersist $ PsP.get dbKey
+  dbp :: Maybe (Entity DatabasePermission) <- runPersist $ PsP.getBy $ UniqueDatabasePermission dbKey (maybe "" id user)
+  let dbPublic = fmap databaseIsPublic db == Just True
+  let userLoggedIn = isJust user
+  let userCanRead = (isJust dbp) && (fmap (databasePermissionRead . PsP.entityVal) dbp == Just True)
+  results <- if (dbPublic || (userLoggedIn && userCanRead)) then do
+      results <- fmap gameGrouper $ runPersist $ getGames' requestData
+      return results
+    else return []
+  return results
 
 groupSplitter :: [GameData] -> GameDataFormatted
 groupSplitter ((g, t, pWhite, pBlack, ga) : rest) = GameDataFormatted g t pWhite pBlack allAttributes
@@ -482,6 +580,11 @@ chessRoutes = [("user2", writeBS "user test")] ++ [("", serveSnap chessApi apiSe
 --   let n = Just $ T.unpack name
 --   runPersist $ Ps.insert_ $ AppUser 1 n time
 --   return ()
+
+-- A useful handler for testing
+nothingHandler :: Handler b Service ()
+nothingHandler = do
+  return ()
 
 createAppUser :: T.Text -> Handler b Service ()
 createAppUser userLogin = do

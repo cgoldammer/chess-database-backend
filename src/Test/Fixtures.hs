@@ -110,14 +110,13 @@ storeGamesIntoDB = do
   dbName <- reader settingsDBName
   mapM_ storeFileIntoDB $ getFiles $ getDBType dbName
 
-temp :: MonadIO m => m [Maybe (Ps.Key Game)]
-temp = undefined
-
 storeFileIntoDB :: (MonadReader Settings m, MonadIO m) => String -> m [Maybe (Ps.Key Game)]
 storeFileIntoDB fileName = do
   dbName <- reader settingsDBName
+  liftIO $ print $ "Database" ++ show dbName
   (_, res) :: (Key Database, [Maybe (Ps.Key Game)]) <- liftIO $ inBackend (connString dbName) $ do
-    dbResult <- Ps.insert (Database fileName True)
+    -- dbResult <- Ps.insert (Database fileName True)
+    -- liftIO $ print $ "done with creation" ++ show dbResult
     let fullName = "./test/files/" ++ fileName
     fileText :: Te.Text <- Tu.strict $ Tu.input $ FS.fromText $ Te.pack fullName
     DatabaseHelpers.readTextIntoDB dbName fileName fileText True
@@ -136,7 +135,6 @@ evaluateGamesReal = do
   games <- liftIO $ inBackend (connString dbName) $ do
     dbGames :: [Entity Game] <- getGamesFromDB continueEval
     return dbGames
-  liftIO $ print $ "Games:" ++ show (length games)
   evaluations :: [Key MoveEval] <- fmap concat $ mapM doEvaluation games
   return ()
 
@@ -145,13 +143,6 @@ evaluateGamesTest = do
   liftIO $ print "Test evaluation"
   evaluateGamesReal
   return ()
-
--- Evaluate a single game, if provided with a flag, then don't run the evaluation
--- if the game is already evaluated.
--- evaluateSingleGame :: MonadIO m => Entity Game -> Bool -> Maybe [Key MoveEval]
--- -- evaluateSingleGame dbGame redoEvaluation = undefined
--- evaluateSingleGame = undefined
-
 
 doEvaluation :: (MonadReader Settings m, MonadIO m) => Entity Game -> m [Key MoveEval]
 doEvaluation dbGame  = do

@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings, ScopedTypeVariables #-}
+{-# LANGUAGE OverloadedStrings, ScopedTypeVariables, TypeFamilies #-}
 -- import Test.HUnit
 import Test.Hspec
 import qualified Test.Hspec.Snap as Test
@@ -17,9 +17,12 @@ import Data.List as L
 import Data.Aeson
 import Data.Maybe as M
 import Data.Aeson.Types
+import Data.Time
+import Data.Time.Clock.POSIX
 
 import Test.Helpers as H
 import Services.Service as S
+import Services.DatabaseHelpers as DBH
 import Services.Types
 import qualified Test.Fixtures as Fix
 
@@ -44,8 +47,9 @@ import qualified Application as AppMain
 
 -- tests = TestList ["Padding win" ~: testPadWin, "Padding lose" ~: testPadLose]
 main = do
-  -- hspec tests
-  hspec testApi
+  hspec $ do
+    helperTest
+    testApi
 
 dbName :: String
 dbName = "test"
@@ -57,36 +61,13 @@ registerTestUser = do
   user <- with AppMain.auth $ registerUser (B.pack "hi") (B.pack "you")
   return user
 
-  
--- getAllUsers :: Handler AppMain.App AppMain.App [Entity AuthUser]
--- getAllUsers = with AppMain.service $ do 
---   players <- runPersist $ do
---     players <- select $ distinct $
---       from $ \p -> do
---         return p
---     return players
---   return players
-
--- currentUserName :: SnapletLens b (AuthManager b) -> Handler b Service (Maybe (T.Text))
 
 userName = "testUser2" :: B.ByteString
 params = Test.params [("login", userName), ("password", "password")]
 
--- createFixtures = do
---   let settings = Fix.Settings "test" False False
---   liftIO $ Fix.runJob settings
---   return ()
-
--- createFixturesForApi f = do
---   createFixtures
---   f
---   return ()
-
-loginForApi userName f = do 
+loginForApi userName = do 
   S.createAppUser $ T.pack userName
   S.changeUser (Just userName)
-  f
-  return ()
 
 parseDB :: Test.TestResponse -> Maybe [Entity Database]
 parseDB (Test.Json _ bs) = decode bs
@@ -100,28 +81,97 @@ keyInt :: PersistValue -> Maybe Int
 keyInt (PersistInt64 a) = Just $ fromIntegral a
 keyInt _ = Nothing
 
+dbKeyInt :: P.PersistEntity a => Key a -> Int
+dbKeyInt key = L.head $ catMaybes $ fmap keyInt $ P.keyToValues key
+
 dbKey :: P.PersistEntity a => Entity a -> Int
-dbKey val = L.head $ catMaybes $ fmap keyInt $ (P.keyToValues . P.entityKey) val
+dbKey = dbKeyInt . P.entityKey
+-- dbKey val = L.head $ catMaybes $ fmap keyInt $ (P.keyToValues . P.entityKey) val
 
 doIO :: IO ()
 doIO = do
-  let settings = Fix.Settings "test" False False
+  let runEval = True
+  let onlyContinueEval = False
+  let dbName = "test"
+  let settings = Fix.Settings dbName runEval onlyContinueEval
   Fix.runJob settings
   return ()
 
-  
+defaultDBName = "game.pgn"
+
+getTimeInt :: IO Int
+getTimeInt = getCurrentTime >>= pure . (1000*) . utcTimeToPOSIXSeconds >>= pure . round
+
+getTimeString = fmap show getTimeInt
+
+getDefaultDBId = fmap (P.entityKey . L.head) $ liftIO $ H.inBackend (DBH.connString dbName) $ do selectList [(P.==.) DatabaseName defaultDBName] []
+
+
+helperTest :: Spec
+helperTest = Test.snap (route S.chessRoutes) (S.serviceInit dbName) $ do 
+    describe "In the testing functions," $ do
+      it "the loginForApi actually changes the current user" $ do
+        username <- liftIO $ getTimeString
+        Test.eval $ loginForApi username
+        user <- Test.eval S.currentUserName
+        Test.shouldEqual (Just username) user
 
 testApi :: Spec
-testApi = Test.snap (route S.chessRoutes) (S.serviceInit dbName) $ beforeAll_ doIO $ do
-  describe "Chess Server" $ do
-    it "Databases should 200" $ do 
+-- testApi = Test.snap (route S.chessRoutes) (S.serviceInit dbName) $ beforeAll_ doIO $ do
+testApi = Test.snap (route S.chessRoutes) (S.serviceInit dbName) $ do 
+  describe "In the database functions," $ do
+    it "the databases function returns the right results" $ do
+      -- Logging in as a new user that doesn't own any databases
+        username <- liftIO $ getTimeString
+        Test.eval $ loginForApi username
+        Test.eval S.nothingHandler
+        res <- Test.eval S.getDatabases
+        liftIO $ print "DATABAES RECEIVED"
+        liftIO $ print res
+        dbDatabases :: [Entity Database] <- liftIO $ H.inBackend (DBH.connString dbName) $ do
+          selectList [(P.==.) DatabaseIsPublic True] []
+        Test.shouldEqual (L.length res) (L.length dbDatabases)
+
+    it "the eval averages are returned for every player" $ do
+      defaultDBId <- getDefaultDBId
+      players :: [Entity Player] <- liftIO $ H.inBackend (DBH.connString dbName) $ do selectList [(P.==.) PlayerDatabaseId defaultDBId] []
+      dbGames :: [Entity Game] <- liftIO $ H.inBackend (DBH.connString dbName) $ do selectList [(P.==.) GameDatabaseId defaultDBId] []
+      res <- Test.eval $ S.getResultByEvaluation $ fmap dbKey dbGames
+      Test.shouldEqual (L.length res) (L.length players)
+
+    it "one should only get games for the private databases that a user owns" $ do
+      let userName = "testUser" :: String
+      let backendInsert row = liftIO $ H.inBackend (DBH.connString dbName) $ P.insert $ row
+      Test.eval $ loginForApi userName
+      user <- fmap (maybe "" id) $ Test.eval S.currentUserName
+      dbTime <- liftIO $ getTimeInt
+      db <- backendInsert $ Database ("temp" ++ show dbTime) False
+      dbp <- backendInsert $ DatabasePermission db user True True True
+      p <- backendInsert $ Player db "temp" "temp"
+      t <- backendInsert $ Tournament db "temp"
+      game <- backendInsert $ Game db p p 1 t "" Nothing
+      ga <- backendInsert $ GameAttribute game "test" "test"
+      let request = S.getGames $ GameRequestData (dbKeyInt db) []
+      games :: [GameDataFormatted] <- Test.eval request
+      Test.shouldEqual (L.length games) 1 
+
+      Test.eval $ loginForApi "temp2"
+      gamesForNewUser <- Test.eval request
+      Test.shouldEqual (L.length gamesForNewUser) 0
+
+  describe "In the API," $ do
+    it "databases should return what's public in the table" $ do 
+      -- Logging in as a user that doesn't own any databases
+      username <- liftIO $ getTimeString
+      Test.eval $ loginForApi username
+      Test.eval S.nothingHandler
       res <- Test.get "/databases"
       let apiDatabases = parseDB res
-      dbDatabases :: [Entity Database] <- liftIO $ H.inBackend (Fix.connString dbName) $ do
-        selectList [] []
+      dbDatabases :: [Entity Database] <- liftIO $ H.inBackend (DBH.connString dbName) $ do selectList [(P.==.) DatabaseIsPublic True] []
       let values = maybe [] id apiDatabases
       Test.shouldEqual (L.length values) (L.length dbDatabases)
-    it "Bad URL should 404" $ do
+
+    it "a bad URL should 404" $ do
       Test.get "/badApi" >>= Test.should404
     it "It should not return a user if no user is set" $ do
       let userName = "testUser"
@@ -130,14 +180,15 @@ testApi = Test.snap (route S.chessRoutes) (S.serviceInit dbName) $ beforeAll_ do
       Test.shouldNotBeTrue isFound
     it "It should return a user if it is set" $ do
       let userName = "testUser" :: String
-      res <- Test.modifySite' (loginForApi userName) $ Test.get "/user"
+      Test.eval $ loginForApi userName
+      res <- Test.get "/user"
       let isFound = L.isInfixOf userName $ show res
       Test.shouldBeTrue isFound
     describe "If I query the /games endpoint then" $ do
       it "it doesn't return anything for a non-existent database" $ do
-        dbDatabases :: [Entity Database] <- liftIO $ H.inBackend (Fix.connString dbName) $ do
+        dbDatabases :: [Entity Database] <- liftIO $ H.inBackend (DBH.connString dbName) $ do
           selectList [] []
-        dbTournaments :: [Entity Tournament] <- liftIO $ H.inBackend (Fix.connString dbName) $ do
+        dbTournaments :: [Entity Tournament] <- liftIO $ H.inBackend (DBH.connString dbName) $ do
           selectList [] []
         let nonExistingDB = (L.maximum (fmap dbKey dbTournaments)) + 1
         let tournamentIds = fmap dbKey dbTournaments
@@ -147,11 +198,11 @@ testApi = Test.snap (route S.chessRoutes) (S.serviceInit dbName) $ beforeAll_ do
         Test.shouldEqual (L.length values) 0
 
       it "it does return values for a database that has games" $ do
-        dbDatabases :: [Entity Database] <- liftIO $ H.inBackend (Fix.connString dbName) $ do
+        dbDatabases :: [Entity Database] <- liftIO $ H.inBackend (DBH.connString dbName) $ do
           selectList [] []
-        dbTournaments :: [Entity Tournament] <- liftIO $ H.inBackend (Fix.connString dbName) $ do
+        dbTournaments :: [Entity Tournament] <- liftIO $ H.inBackend (DBH.connString dbName) $ do
           selectList [] []
-        dbGames :: [Entity Game] <- liftIO $ H.inBackend (Fix.connString dbName) $ do
+        dbGames :: [Entity Game] <- liftIO $ H.inBackend (DBH.connString dbName) $ do
           selectList [] []
         let firstGame = L.head dbGames 
         let gamesForDB = L.filter (\v -> (gameDatabaseId (entityVal v) == gameDatabaseId (entityVal firstGame))) dbGames
@@ -164,7 +215,6 @@ testApi = Test.snap (route S.chessRoutes) (S.serviceInit dbName) $ beforeAll_ do
         let values = maybe [] id $ parseGameData res
         Test.shouldEqual (L.length values) (L.length gamesForDB)
 
-      
 tests :: Spec
 tests = Test.snap (route AppMain.routes) (AppMain.app dbName) $ do
           describe "Application" $ do

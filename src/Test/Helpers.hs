@@ -35,9 +35,12 @@ import qualified Chess.Pgn.Logic as Pgn
 type DataAction a = ReaderT PsP.SqlBackend (NoLoggingT (ResourceT IO)) a
 
 inBackend :: String -> DataAction a -> IO a
-inBackend conn action = runStderrLoggingT $ PsP.withPostgresqlPool (B.pack conn) 10 $ \pool -> liftIO $ do
+inBackend conn action = runStderrLoggingT $ PsP.withPostgresqlPool (B.pack conn) 1 $ \pool -> liftIO $ do
   flip PsP.runSqlPersistMPool pool $ do
     PsP.runMigration migrateAll
+    text <- PsP.runMigrationSilent migrateAll
+    liftIO $ print "Migration done"
+    liftIO $ print $ show text
     action
 
 -- | Run a database action (taken from snaplet-persistent)

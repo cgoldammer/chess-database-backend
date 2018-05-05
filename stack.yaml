@@ -45,7 +45,7 @@ extra-deps:
   - Unique-0.4.6.1
   - hspec-snap-1.0.0.2
   - digestive-functors-0.8.2.0
-  - HUnit-1.6.0.0
+  - HUnit-1.5.0.0
   - hspec-2.4.8
   - hspec-discover-2.4.8
   - hspec-expectations-0.8.2

@@ -56,7 +56,9 @@ import qualified Chess.Board as Board
 import qualified Chess.Stockfish as Stockfish
 
 connString :: String -> String
-connString dbName = "host=localhost dbname=chess_" ++ dbName ++ " user=postgres"
+connString dbName = trace name name
+  where 
+    name = "host=localhost dbname=chess_" ++ dbName ++ " user=postgres"
 
 
 keyReader = either entityKey id
@@ -81,6 +83,10 @@ storeGameIntoDB dbResult g = do
       mapM_ (\(name, val) -> Ps.insert (GameAttribute gameResult name val)) formattedTags
       return $ Just gameResult
     else do
+      liftIO $ print $ "NOT PARSED"
+      liftIO $ print $ show g
+
+        
       return Nothing
 
 
@@ -160,11 +166,21 @@ dateStringParse = do
 
 readTextIntoDB :: MonadIO m => String -> String -> Te.Text -> Bool -> m (Ps.Key Database, [Maybe (Ps.Key Game)])
 readTextIntoDB dbName chessDBName text isPublic = do
+  res <- liftIO $ inBackend (connString dbName) $ do
+    dbResult <- Ps.insert (TestThing "test")
+    return dbResult
   res <- liftIO $ inBackend (connString dbName) $ readTextWithPersist chessDBName text isPublic
   return res
 
 readTextWithPersist chessDBName text isPublic = do
   dbResult <- Ps.insert (Database chessDBName isPublic)
   let games = Pgn.getGamesFromText text
+
   gameResults <- mapM (storeGameIntoDB dbResult) $ rights games
+  PsP.transactionSave
+  liftIO $ print $ "Number of games: " ++ show (length games)
+  liftIO $ print $ "Length: " ++ show (Te.length text)
+  liftIO $ print $ "Number of games correctly parsed: " ++ show (length $ rights games)
+  liftIO $ print $ "Number of games stored: " ++ show (length gameResults)
+  liftIO $ print $ "Number of games stored: " ++ show gameResults
   return (dbResult, gameResults)

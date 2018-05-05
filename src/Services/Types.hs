@@ -65,6 +65,7 @@ MoveEval json
   moveBest String
   eval Int Maybe
   mate Int Maybe
+  UniqueMoveEval gameId moveNumber isWhite
 
 Player json
   databaseId DatabaseId
@@ -82,8 +83,11 @@ PlayerRating json
 AppUser json
   userId String
   name String Maybe
-  subscriptionTime UTCTime default=CURRENT_TIMESTAMP
+  subscriptionTime UTCTime
   deriving Show
+
+TestThing json
+  name String
 |]
 
 instance Show Database
@@ -97,4 +101,3 @@ instance Show Game
 
 instance Show Player where
   show p = playerFirstName p ++ " " ++ playerLastName p
-

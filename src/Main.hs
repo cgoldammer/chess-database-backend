@@ -18,13 +18,12 @@ import qualified System.Environment as Env
 
 import           Application
 
-defaultDB = "test"
+defaultDB = "dev"
 
 getDBFromEnvironment :: IO String
 getDBFromEnvironment = do
   envDB <- Env.lookupEnv "dbName"
   return $ maybe defaultDB id envDB
-
 
 main :: IO ()
 main = do
