@@ -72,7 +72,7 @@ routes = [
     ("fail", writeBS "lgin error"),
     ("login", with auth handleLoginSubmit),
     ("register", with auth handleNewUser),
-    ("logout", with auth handleLogout)
+    ("logout", with auth handleLogout >> resetUser)
     ]
 
 handleLogins :: T.Text -> Handler App (AuthManager App) ()
@@ -94,13 +94,13 @@ handleLoginSubmit = do
   return ()
 -- handleLoginSubmit = loginUser "login" "password" Nothing (\err -> handleLogins ((T.pack . show) err)) (redirect "/test")
 
-setUser :: Handler App App ()
-setUser = do
+resetUser :: Handler App App ()
+resetUser = do
   with service $ S.changeUser Nothing
   return ()
 
 handleLogout :: Handler App (AuthManager App) ()
-handleLogout = logout -- >> redirect "/"
+handleLogout = logout
 
 registerEvent (Left x) = T.pack $ show x
 registerEvent (Right x) = T.pack ""
@@ -124,6 +124,5 @@ handleNewUser = do
         Left _ -> do
                 return ()
 
-    -- handleLogins (registerEvent res)
     handleLoginSubmit
     return ()

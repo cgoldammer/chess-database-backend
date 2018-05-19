@@ -3,10 +3,10 @@ import Options.Applicative
 import qualified Test.Fixtures as F
 
 dbTypeParser :: Parser String
-dbTypeParser = fmap dbNameReader $ switch (long "test" <> short 't' <> help "Run test analysis")
+dbTypeParser = fmap dbNameReader $ switch (long "dev" <> short 't' <> help "Run test analysis")
 
 dbNameReader :: F.IsTest -> String
-dbNameReader True = "test"
+dbNameReader True = "dev"
 dbNameReader False = "prod"
 
 main :: IO ()

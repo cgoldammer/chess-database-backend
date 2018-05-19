@@ -135,7 +135,13 @@ evaluateGamesReal = do
   games <- liftIO $ inBackend (connString dbName) $ do
     dbGames :: [Entity Game] <- getGamesFromDB continueEval
     return dbGames
-  evaluations :: [Key MoveEval] <- fmap concat $ mapM doEvaluation games
+  let gameId = fmap entityKey games
+  liftIO $ print $ "GAMES"
+  liftIO $ print $ show gameId
+  -- TODO: Just for bug testing
+  let games2 = reverse games
+
+  evaluations :: [Key MoveEval] <- fmap concat $ mapM doEvaluation games2
   return ()
 
 evaluateGamesTest :: (MonadReader Settings m, MonadIO m) => m ()
@@ -157,8 +163,8 @@ doAndStoreEvaluationIO dbName dbGame = do
     (Just game) -> do
       summaries <- liftIO $ Pgn.gameSummaries game
       keys <- liftIO $ inBackend (connString dbName) $ do
-        k <- Ps.insertMany $ evalToRow (entityKey dbGame) summaries
-        return k
+        k <- mapM Ps.insertBy $ evalToRow (entityKey dbGame) summaries
+        return $ rights k
       return keys
     Nothing ->
       return []
@@ -222,9 +228,11 @@ WHERE game.id not in (SELECT DISTINCT game_id from move_eval)
 
 getGamesFromDB :: Bool -> DataAction [Entity Game]
 getGamesFromDB continueEval = do
+  liftIO $ print $ "COntinuing" ++ show continueEval
+
   let query = if continueEval then sqlGamesUnevaluated else sqlGamesAll
   games :: [Entity Game] <- rawSql query []
-  games <- Ps.selectList [] []
+  -- games <- Ps.selectList [] []
   return games
 
 evalToRow :: Key Game -> [Pgn.MoveSummary] -> [MoveEval]

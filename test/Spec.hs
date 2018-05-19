@@ -139,6 +139,13 @@ testApi = Test.snap (route S.chessRoutes) (S.serviceInit dbName) $ do
       res <- Test.eval $ S.getResultByEvaluation $ fmap dbKey dbGames
       Test.shouldEqual (L.length res) (L.length players)
 
+    it "the move summaries are returned for every player" $ do
+      defaultDBId <- getDefaultDBId
+      players :: [Entity Player] <- liftIO $ H.inBackend (DBH.connString dbName) $ do selectList [(P.==.) PlayerDatabaseId defaultDBId] []
+      dbGames :: [Entity Game] <- liftIO $ H.inBackend (DBH.connString dbName) $ do selectList [(P.==.) GameDatabaseId defaultDBId] []
+      res <- Test.eval $ S.getResultByEvaluation $ fmap dbKey dbGames
+      Test.shouldEqual (L.length res) (L.length players)
+
     it "one should only get games for the private databases that a user owns" $ do
       let userName = "testUser" :: String
       let backendInsert row = liftIO $ H.inBackend (DBH.connString dbName) $ P.insert $ row
