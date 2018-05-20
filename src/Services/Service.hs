@@ -21,50 +21,36 @@
 module Services.Service where
 
 import GHC.Generics (Generic)
-import GHC.Int
 import qualified Control.Lens as Lens
 import Control.Monad.State.Class as SC
 import Data.Aeson
-import Data.Aeson.Types
 import Snap.Core
 import Snap.Snaplet
 import Snap.Snaplet.PostgresqlSimple
-import Data.Char as C
 import qualified Data.ByteString.Char8 as B
-import qualified Data.ByteString.Lazy as BL
 import qualified Data.Text.Lazy as TL
-import Snap.Snaplet.Auth
 import Data.List
-import Control.Exception (try)
 import qualified Data.Text as T
 import qualified Data.Text.Template as Template
-import Control.Monad
-import Language.Javascript.JQuery
-
-import Servant.API hiding (GET, POST)
-
 import qualified Database.Persist as Ps
 import qualified Database.Persist.Postgresql as PsP
 import Database.Esqueleto
 
 import Control.Monad.IO.Class (liftIO, MonadIO)
 import Snap.Snaplet.Persistent
-import Text.Read (readMaybe)
 import Data.Maybe (isJust)
 import Servant.API hiding (GET)
-import Servant (serveSnap, Server, serveDirectory, ServerT)
+import Servant (serveSnap, Server)
 import Data.Maybe
 import Data.Proxy (Proxy(..))
 import qualified Data.Time.Clock as C
 import qualified Data.Map as M
-import Data.Conduit
-import qualified Data.Conduit.List as CL
 import Data.List as L
 import Text.RawString.QQ
 import Debug.Trace
 import           Data.IORef
 
-import           Control.Monad.Logger (runNoLoggingT, NoLoggingT, runStderrLoggingT)
+import           Control.Monad.Logger (runNoLoggingT, NoLoggingT)
 import qualified Database.Persist.Postgresql as PG
 import Data.Configurator as DC
 import Services.Types
@@ -81,16 +67,17 @@ user = do n <- St.get
           return n
 
 data Service = Service {
-    _pg :: Snaplet Postgres
-  , _db :: Snaplet PersistState
-  , _currentUser :: IORef (Maybe String)}
+    _servicePG :: Snaplet Postgres
+  , _serviceDB :: Snaplet PersistState
+  , _serviceCurrentUser :: IORef (Maybe String)}
 Lens.makeLenses ''Service
 
 instance HasPersistPool (Handler b Service) where
-  getPersistPool = with db getPersistPool
+  getPersistPool = with serviceDB getPersistPool
 
 instance HasPostgres (Handler b Service) where
-  getPostgresState = with pg SC.get
+  getPostgresState = with servicePG SC.get
+  setLocalPostgresState = undefined
 
 type LoginUser = Maybe Int
 
@@ -107,9 +94,9 @@ initPersistWithDB dbName = initPersistGeneric $ mkSnapletPgPoolWithDB dbName
 
 currentUserName :: Handler b Service (Maybe String)
 currentUserName = do
-  nameRef <- gets _currentUser
-  user <- liftIO $ readIORef nameRef
-  return user
+  nameRef <- gets _serviceCurrentUser
+  usr <- liftIO $ readIORef nameRef
+  return usr
 
 
 data ImpMove = ImpMove { impMove :: String, impBest :: String, impWhite :: String, impBlack :: String, impMoveEval :: String, impBestEval :: String } deriving (Generic, FromJSON, ToJSON)
@@ -117,14 +104,14 @@ data ImpMove = ImpMove { impMove :: String, impBest :: String, impWhite :: Strin
 
 test :: MonadIO m => SqlPersistT m [Entity AppUser]
 test = do
-  users <- select $ from $ \user -> do
-    return user
+  users <- select $ from $ \usr -> do
+    return usr
   return users
 
 changeUser :: Maybe String -> Handler b Service ()
-changeUser val = do
-  nameRef <- gets _currentUser
-  liftIO $ writeIORef nameRef val
+changeUser value = do
+  nameRef <- gets _serviceCurrentUser
+  liftIO $ writeIORef nameRef value
   return ()
 
 
@@ -140,16 +127,17 @@ getPlayers searchData = runPersist $ do
 getDatabases :: Handler b Service [Entity Database]
 getDatabases = do
   currentUser :: Maybe String <- currentUserName
+  liftIO $ print $ "Current user" ++ show currentUser
   dbs <- runPersist $ do
     dbsPublic <- select $ from $ \db -> do
       where_ (db^.DatabaseIsPublic)
       return db
     let searchUser = maybe "NOUSER" id currentUser
-    let searchCondition db dbp = (dbp^.DatabasePermissionUserId ==. (val searchUser)) &&. (dbp^.DatabasePermissionRead ==. (val True))
+    let searchCondition dbp = (dbp^.DatabasePermissionUserId ==. (val searchUser)) &&. (dbp^.DatabasePermissionRead ==. (val True))
     let mergeCondition db dbp = dbp^.DatabasePermissionDatabaseId ==. db^.DatabaseId
     dbsPersonal <- select $ distinct $ 
       from $ \(db, dbp) -> do
-        where_ $ (mergeCondition db dbp) &&. (searchCondition db dbp)
+        where_ $ (mergeCondition db dbp) &&. (searchCondition dbp)
         return db
     return $ dbsPublic ++ dbsPersonal
   return dbs
@@ -179,6 +167,7 @@ data DataSummary = DataSummary {
   , numberMoveEvals :: Int
 } deriving (Generic, Show, Eq, ToJSON, FromJSON)
 
+dataSummaryQuery :: T.Text
 dataSummaryQuery = [r|
 WITH 
     numberTournaments as (SELECT count(distinct id) as "numberTournaments" FROM tournament where database_id=?)
@@ -210,8 +199,8 @@ getDataSummary searchData = do
   let db = searchDB searchData
   let arguments = take 4 $ repeat $ PersistInt64 (fromIntegral db)
   results :: [QueryType] <- runPersist $ rawSql dataSummaryQuery arguments
-  let (Single numberTournaments, Single numberGames, Single numberGameEvals, Single numberMoveEvals) = head results
-  return $ DataSummary numberTournaments numberGames numberGameEvals numberMoveEvals
+  let (Single numTournaments, Single numGames, Single numGameEvals, Single numMoveEvals) = head results
+  return $ DataSummary numTournaments numGames numGameEvals numMoveEvals
 
 evalData :: MoveRequestData -> Handler b Service ([Entity Player], [Helpers.EvalResult])
 evalData mrData = do
@@ -219,8 +208,7 @@ evalData mrData = do
   let tournaments = moveRequestTournaments mrData
   let tournamentKeys = fmap intToKey tournaments
   players :: [Entity Player] <- getPlayers $ DefaultSearchData db
-  let playerKeys = fmap entityKey players
-  evals <- getMoveEvals (intToKeyDB db) playerKeys tournamentKeys
+  evals <- getMoveEvals (intToKeyDB db) tournamentKeys
   return (players, evals)
 
 getEvalResults :: MoveRequestData -> Handler b Service [Helpers.EvalResult]
@@ -233,16 +221,19 @@ getMoveSummary mrData = do
   (playerKeys, evals) <- evalData mrData
   return $ Helpers.summarizeEvals playerKeys evals
 
-selectEvalResults :: MonadIO m => Key Database -> [Key Player] -> [Key Tournament] -> SqlPersistT m [Helpers.EvalResult]
-selectEvalResults db players tournaments = do
+selectEvalResults :: MonadIO m => Key Database -> [Key Tournament] -> SqlPersistT m [Helpers.EvalResult]
+selectEvalResults db tournaments = do
+  let tournamentMatch t = t ^. TournamentId `in_` valList tournaments
+  let tournamentCondition t = if (length tournaments > 0) then (tournamentMatch t) else (val True)
   results <- select $ 
     from $ \(me, g, t) -> do
-    where_ $ (me ^. MoveEvalGameId ==. g ^. GameId) &&. (g ^. GameTournament ==. t ^. TournamentId) &&. (t ^. TournamentId `in_` valList tournaments) &&. (g^.GameDatabaseId ==. val db)
+    where_ $ (me ^. MoveEvalGameId ==. g ^. GameId) &&. (g ^. GameTournament ==. t ^. TournamentId) &&. (tournamentCondition t) &&. (g^.GameDatabaseId ==. val db)
     return (me, g)
   return results
 
-getMoveEvals :: Key Database -> [Key Player] -> [Key Tournament] -> Handler b Service [Helpers.EvalResult]
-getMoveEvals db players tournaments = runPersist (selectEvalResults db players tournaments)
+
+getMoveEvals :: Key Database -> [Key Tournament] -> Handler b Service [Helpers.EvalResult]
+getMoveEvals db tournaments = runPersist (selectEvalResults db tournaments)
 
 printName :: GameAttributeId -> String
 printName = show
@@ -312,7 +303,7 @@ listToInClause ints = clause
 viewQuery :: T.Text
 viewQuery = [r|
 CREATE OR REPLACE VIEW moveevals as (
-  SELECT game_id, is_white, move_number, greatest(eval - next_eval, 0) as cploss FROM (
+  SELECT game_id, is_white, move_number, greatest(((is_white :: Int)*2-1)*(eval - next_eval), 0) as cploss FROM (
     SELECT game_id, is_white, move_number, eval, lead(eval) over (partition by game_id order by id) as next_eval
     FROM move_eval) as lags);
 |]
@@ -326,11 +317,12 @@ evalQueryTemplate = [r|
     ON me.game_id = g.id
     WHERE g.id in $gameList
   )
-  SELECT game_id, player_white_id as player_id, avg(cploss)::Int as cploss, avg((game_result+1)/2*100)::Int as result from me_player WHERE is_white group by game_id, player_white_id
+  SELECT game_id, player_white_id as player_id, avg(cploss)::Int as cploss, avg((game_result+1)*100/2)::Int as result from me_player WHERE is_white group by game_id, player_white_id
   UNION ALL
-  SELECT game_id, player_black_id as player_id, avg(cploss)::Int as cploss, avg((-game_result+1)/2*100)::Int as result from me_player WHERE not is_white group by game_id, player_black_id;
+  SELECT game_id, player_black_id as player_id, avg(cploss)::Int as cploss, avg((-game_result+1)*100/2)::Int as result from me_player WHERE not is_white group by game_id, player_black_id;
 |]
 
+testQueryTemplate :: T.Text
 testQueryTemplate = [r| SELECT id, id from game where id in $c|]
 
 testQueryString :: [Int] -> T.Text
@@ -462,15 +454,16 @@ apiServer =      getMyUser
     getTest = do
       return 1
     getMyUser = do
-      user <- currentUserName 
-      users <- runPersist $ selectUser $ fmap T.pack user
+      usr <- currentUserName 
+      users <- runPersist $ selectUser $ fmap T.pack usr
       return $ listToMaybe users
 
 type ResultPercentageQueryResult = (Single Int, Single Int, Single Int, Single Int)
 
 toResultPercentage :: ResultPercentageQueryResult -> ResultPercentage
-toResultPercentage (Single ownElo, Single opponentElo, Single winPercentage, Single drawPercentage) = ResultPercentage ownElo opponentElo winPercentage drawPercentage
+toResultPercentage (Single ownRating, Single oppRating, Single winP, Single drawP) = ResultPercentage ownRating oppRating winP drawP
 
+resultPercentageQuery :: T.Text
 resultPercentageQuery = [r|
 SELECT rating_own
     , rating_opponent
@@ -507,12 +500,12 @@ data GameDataFormatted = GameDataFormatted {
 
 getGames :: GameRequestData -> Handler b Service [GameDataFormatted]
 getGames requestData = do
-  user <- currentUserName
+  usr <- currentUserName
   let dbKey = intToKeyDB $ gameRequestDB requestData
   db :: Maybe Database <- runPersist $ PsP.get dbKey
-  dbp :: Maybe (Entity DatabasePermission) <- runPersist $ PsP.getBy $ UniqueDatabasePermission dbKey (maybe "" id user)
+  dbp :: Maybe (Entity DatabasePermission) <- runPersist $ PsP.getBy $ UniqueDatabasePermission dbKey (maybe "" id usr)
   let dbPublic = fmap databaseIsPublic db == Just True
-  let userLoggedIn = isJust user
+  let userLoggedIn = isJust usr
   let userCanRead = (isJust dbp) && (fmap (databasePermissionRead . PsP.entityVal) dbp == Just True)
   results <- if (dbPublic || (userLoggedIn && userCanRead)) then do
       results <- fmap gameGrouper $ runPersist $ getGames' requestData
@@ -522,7 +515,7 @@ getGames requestData = do
 
 groupSplitter :: [GameData] -> GameDataFormatted
 groupSplitter ((g, t, pWhite, pBlack, ga) : rest) = GameDataFormatted g t pWhite pBlack allAttributes
-  where allAttributes = ga : (fmap (\(_, _, _, _, ga) -> ga) rest)
+  where allAttributes = ga : (fmap (\(_, _, _, _, gat) -> gat) rest)
 
 gameDataEqual :: GameData -> GameData -> Bool
 gameDataEqual (g, _, _, _, _) (g', _, _, _, _) = entityKey g == entityKey g'
@@ -559,12 +552,13 @@ usId x = maybe 0 (read . T.unpack) x
 
 serviceInit :: String -> SnapletInit b Service
 serviceInit dbName = makeSnaplet "chess" "Chess Service" Nothing $ do
-  pg <- nestSnaplet "pg" pg pgsInit
-  d <- nestSnaplet "db" db $ initPersistWithDB dbName (runMigrationUnsafe migrateAll)
+  pg <- nestSnaplet "pg" servicePG pgsInit
+  d <- nestSnaplet "db" serviceDB $ initPersistWithDB dbName (runMigrationUnsafe migrateAll)
   addRoutes chessRoutes
-  user <- liftIO $ newIORef $ Just "Test IT"
-  return $ Service pg d user
+  usr <- liftIO $ newIORef $ Nothing
+  return $ Service pg d usr
 
+chessRoutes :: [(B.ByteString, Handler b Service ())]
 chessRoutes = [("user2", writeBS "user test")] ++ [("", serveSnap chessApi apiServer)]
 
 -- getUser :: SnapletLens b (AuthManager b) -> Handler b Service ()
@@ -593,16 +587,17 @@ createAppUser userLogin = do
   return ()
 
 selectUser :: MonadIO m => Maybe T.Text -> SqlPersistT m [AppUser]
-selectUser (Just usId) = do
-  users <- select $ from $ \user -> do
-    let idString = T.unpack usId :: String
+selectUser (Just userId) = do
+  users <- select $ from $ \usr -> do
+    let idString = T.unpack userId :: String
     -- let idKey = (toSqlKey . fromIntegral) idString
-    where_ $ user ^. AppUserUserId ==. val idString
-    return user
+    where_ $ usr ^. AppUserUserId ==. val idString
+    return usr
   return $ entityVal <$> users
 selectUser Nothing = do
   return []
 
+userFields :: [B.ByteString]
 userFields = fmap B.pack ["name"]
 
 -- postUser :: SnapletLens b (AuthManager b) -> Handler b Service ()

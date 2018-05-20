@@ -21,12 +21,9 @@
 module Services.Helpers where
 
 import GHC.Generics (Generic)
-import qualified Control.Lens as Lens
-
 import qualified Data.Map as M
 import Data.Aeson
 import Data.Aeson.Types
-import qualified Database.Persist as Ps
 import qualified Database.Persist.Postgresql as PsP
 import qualified Data.Char as C
 import qualified Data.List as L
@@ -60,7 +57,7 @@ intAverage x = div (sum x) (length x)
 
 moveAverage :: EntityMap Player -> Key Player -> [DataForMoveAverage] -> MoveSummary
 moveAverage playerMap playerKey me = MoveSummary key playerName average
-  where average = averageByPlayer me
+  where average = MoveAverage $ averageByPlayer me
         player = Mb.fromJust $ M.lookup playerKey playerMap
         key = show playerKey
         playerName = show player
@@ -83,6 +80,7 @@ aggregateEval maxLength dataForAverage = padEvals maxLength result $ zip moves e
 entityToMap :: Ord (Key a) => [PsP.Entity a] -> M.Map (Key a) a
 entityToMap ls = M.fromList $ [(PsP.entityKey x, PsP.entityVal x) | x <- ls]
 
+maxEval :: Int
 maxEval = 400
 
 resultValue :: GameResult -> Int
@@ -96,6 +94,7 @@ readGameResult 0 = Just Draw
 readGameResult (-1) = Just Lose
 readGameResult _ = Nothing
 
+evalAsIntWithColor :: Bool -> MoveEval -> Int
 evalAsIntWithColor True me = evalAsInt me
 evalAsIntWithColor False me = - (evalAsInt me)
 
@@ -103,17 +102,18 @@ evalAsInt :: MoveEval -> Int
 evalAsInt me = max (- maxEval) (min maxEval eval)
   where eval = evalHelper me
 
+evalHelper :: MoveEval -> Int
 evalHelper (MoveEval _ _ _ _ _ (Just x) _) = x
 evalHelper (MoveEval _ _ _ _ _ _ (Just x)) = x * 100
 
-groupWithVal :: (Ord b, Eq b) => (a -> b) -> [a] -> M.Map b [a]
+groupWithVal :: (Ord b) => (a -> b) -> [a] -> M.Map b [a]
 groupWithVal f x = M.fromList [(fst (head el), fmap snd el) | el <- grouped]
   where tuples = [(f val, val) | val <- L.sortOn f x]
         equal t t' = fst t == fst t'
         grouped = L.groupBy equal tuples -- [[(b, a)]]
 
 addColor :: Key Player -> [EvalResult] -> [(GameResult, IsWhite, EvalResult)]
-addColor player evalResults = [(ownGameResult g, isWhite g, evalResult) | evalResult@(er, g) <- evalResults]
+addColor player evalResults = [(ownGameResult g, isWhite g, evalResult) | evalResult@(_, g) <- evalResults]
   where isWhite g = if (gamePlayerWhiteId (PsP.entityVal g)) == player then True else False
         gameResult g = Mb.fromJust $ readGameResult $ gameGameResult $ PsP.entityVal g
         ownGameResult g = getOwnGameResult (gameResult g) (isWhite g)
@@ -146,10 +146,14 @@ cleanSummName :: String -> String
 cleanSummName s = [C.toLower c] ++ rest
   where (c: rest) = drop (length ("moveSummary" :: String)) s
 
-type MoveAverage = M.Map Int Int
+type AvgMoveEval = Int
+type AvgMoveStdError = Int
+type MoveNumber = Int
+
+newtype MoveAverage = MoveAverage (M.Map MoveNumber AvgMoveEval)
 
 instance ToJSON MoveAverage where
-  toJSON ma = toJSON $ M.mapKeys show ma
+  toJSON (MoveAverage ma) = toJSON $ M.mapKeys show ma
 
 
 summarizeEvals :: [PsP.Entity Player] -> [EvalResult] -> [MoveSummary]
@@ -160,7 +164,8 @@ summarizeEvals players evals = fmap (handleMoveAverage playerMap) $ M.assocs byP
 handleMoveAverage :: M.Map (Key Player) Player -> (Key Player, [DataForMoveAverage]) -> MoveSummary
 handleMoveAverage playerMap (playerKey, list) = moveAverage playerMap playerKey list
 
-summarizeByPlayer players evals = list
+summarizeByPlayer :: a -> [EvalResult] -> [(Key Player, [DataForMoveAverage])]
+summarizeByPlayer _ evals = list
   where list = M.assocs $ movesByPlayer evals 
 
 type IsWhite = Bool

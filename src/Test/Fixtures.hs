@@ -14,28 +14,16 @@
 module Test.Fixtures where
 
 import qualified Database.Persist as Ps
-import qualified Database.Persist.Postgresql as PsP
-import qualified Data.ByteString.Char8 as B
-import           Database.Persist.TH
 import           Database.Persist.Sql
-import           Database.PostgreSQL.Simple.Time
-import           Control.Monad.Logger (runNoLoggingT, NoLoggingT, runStderrLoggingT)
-import Data.Time
 import qualified Data.Text as Te
-import qualified Data.List as L
-import qualified Data.Maybe as M
-import Data.Maybe
 import Data.Either
 import Control.Monad.IO.Class
-import Control.Applicative
-import Control.Monad.Trans.Resource
 import Control.Monad.Trans.Reader (ReaderT)
 import Control.Monad.Reader.Class
 import Control.Monad.Reader
 import qualified Data.Either.Combinators as EitherC
 import Debug.Trace
 import Text.RawString.QQ
-import qualified Data.Attoparsec.Text as Parsec
 import qualified Filesystem.Path.CurrentOS as FS
 import qualified Turtle as Tu
 
@@ -46,7 +34,6 @@ import Services.DatabaseHelpers as DatabaseHelpers
 import qualified Chess.Pgn.Logic as Pgn
 import qualified Chess.Logic as Logic
 
-import qualified Chess.Helpers as Helpers
 
 import qualified Chess.Board as Board
 import qualified Chess.Stockfish as Stockfish
@@ -83,9 +70,11 @@ runJob settings = do
   runReaderT readerActions settings
   return ()
 
+doNothing' :: ReaderT Settings IO ()
 doNothing' = do
   return ()
 
+readerActions :: ReaderT Settings IO ()
 readerActions = do
   continue <- reader settingsOnlyContinueEval
   evaluate <- reader settingsRunEval
@@ -135,18 +124,12 @@ evaluateGamesReal = do
   games <- liftIO $ inBackend (connString dbName) $ do
     dbGames :: [Entity Game] <- getGamesFromDB continueEval
     return dbGames
-  let gameId = fmap entityKey games
-  liftIO $ print $ "GAMES"
-  liftIO $ print $ show gameId
-  -- TODO: Just for bug testing
   let games2 = reverse games
-
-  evaluations :: [Key MoveEval] <- fmap concat $ mapM doEvaluation games2
+  fmap concat $ mapM doEvaluation games2
   return ()
 
 evaluateGamesTest :: (MonadReader Settings m, MonadIO m) => m ()
 evaluateGamesTest = do
-  liftIO $ print "Test evaluation"
   evaluateGamesReal
   return ()
 
@@ -182,6 +165,7 @@ doAndStoreEvaluationIO dbName dbGame = do
 -- If you are using this data to report player ratings graphs, you might
 -- want to fill in this missing time period with the latest preceding rating.
 
+ratingQuery :: Tu.Text
 ratingQuery = [r|
 SELECT player_id, extract(year from date) as year, extract(month from date) as month, avg(rating)::Int
 FROM (
@@ -213,11 +197,13 @@ addRatings = do
 
 -- select where the game id cannot be found in move_eval
 
+sqlGamesAll :: Tu.Text
 sqlGamesAll = [r|
 SELECT ??
 FROM game
 |]
 
+sqlGamesUnevaluated :: Tu.Text
 sqlGamesUnevaluated = [r|
 SELECT ?? 
 FROM game
@@ -228,11 +214,8 @@ WHERE game.id not in (SELECT DISTINCT game_id from move_eval)
 
 getGamesFromDB :: Bool -> DataAction [Entity Game]
 getGamesFromDB continueEval = do
-  liftIO $ print $ "COntinuing" ++ show continueEval
-
   let query = if continueEval then sqlGamesUnevaluated else sqlGamesAll
   games :: [Entity Game] <- rawSql query []
-  -- games <- Ps.selectList [] []
   return games
 
 evalToRow :: Key Game -> [Pgn.MoveSummary] -> [MoveEval]
@@ -244,7 +227,7 @@ evalToRowColor g n (Board.White) (ms : rest) = constructEvalMove g n True ms : e
 evalToRowColor g n (Board.Black) (ms : rest) = constructEvalMove g n False ms : evalToRowColor g (n + 1) (Board.White) rest
 
 constructEvalMove :: Key Game -> Int -> Bool -> Pgn.MoveSummary -> MoveEval
-constructEvalMove gm n isWhite (Pgn.MoveSummary mv mvBest evalMove evalBest _) = MoveEval gm n isWhite mvString mvBestString (evalInt evalMove) (evalMate evalMove)
+constructEvalMove gm n isWhite (Pgn.MoveSummary mv mvBest evalMove _ _) = MoveEval gm n isWhite mvString mvBestString (evalInt evalMove) (evalMate evalMove)
   where mvString = Just $ Board.showMove mv
         mvBestString = Board.showMove mvBest
 

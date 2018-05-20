@@ -13,14 +13,9 @@
 
 module Services.Types where
 
-import Database.PostgreSQL.Simple.Time
 import Data.Time
-import Control.Monad.IO.Class  (liftIO)
-import Database.Persist
-import Database.Persist.Postgresql
 import Database.Persist.TH
 import Data.Aeson
-import Data.Aeson.Types
 
 
 share [mkPersist sqlSettings, mkMigrate "migrateAll"] [persistLowerCase|

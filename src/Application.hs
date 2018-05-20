@@ -9,33 +9,19 @@ module Application where
 
 ------------------------------------------------------------------------------
 import Control.Lens
-import Control.Monad.IO.Class (MonadIO, liftIO)
 import Snap.Snaplet
-import Snap.Snaplet.Heist
 import Snap.Snaplet.Session
 import qualified Data.ByteString.Char8 as B
-import           Data.IORef
 import Snap.Snaplet.Persistent
 import qualified Data.Text as T
 import qualified Heist.Interpreted as I
 import           Data.Map.Syntax ((##))
-import Database.Persist as P
 import Database.Persist.Sql
-import Snap.Snaplet.Persistent
-import           Snap.Snaplet.Session
-import           Snap.Snaplet.Session.Backends.CookieSession
 import           Snap.Snaplet.Auth.Backends.Persistent
-import           Control.Applicative
 import           Snap.Core
-import           Snap.Util.FileServe
-import           Snap.Http.Server
-import           Snap.Snaplet.Config
-import           Snap.Snaplet
 import           Snap.Snaplet.Auth
-import           Snap.Snaplet.Auth.Backends.JsonFile
 import           Snap.Snaplet.Heist
 import           Snap.Snaplet.Session.Backends.CookieSession
-import           Snap.Util.FileServe
 import Debug.Trace
 
 import qualified Services.Service as S
@@ -67,6 +53,7 @@ app dbName = makeSnaplet "app" "An snaplet example application." Nothing $ do
     addRoutes routes
     return $ App h s d a ls
 
+routes :: [(B.ByteString, Handler App App ())]
 routes = [
     ("test", writeBS "hi you"),
     ("fail", writeBS "lgin error"),
@@ -87,7 +74,7 @@ nothingHandler = do
 
 handleLoginSubmit :: Handler App (AuthManager App) ()
 handleLoginSubmit = do
-  us <- loginUser "email" "password" Nothing (\err -> writeBS (B.pack ("Error: " ++ show err))) nothingHandler
+  loginUser "email" "password" Nothing (\err -> writeBS (B.pack ("Error: " ++ show err))) nothingHandler
   user <- currentUser
   let login = fmap (T.unpack . userLogin) user
   withTop service $ S.changeUser login
@@ -101,9 +88,6 @@ resetUser = do
 
 handleLogout :: Handler App (AuthManager App) ()
 handleLogout = logout
-
-registerEvent (Left x) = T.pack $ show x
-registerEvent (Right x) = T.pack ""
 
 registerNew :: Handler App (AuthManager App) (Either AuthFailure AuthUser) 
 registerNew = method POST $ registerUser "email" "password"

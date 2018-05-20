@@ -22,38 +22,23 @@ module Services.DatabaseHelpers where
 
 import qualified Database.Persist as Ps
 import qualified Database.Persist.Postgresql as PsP
-import qualified Data.ByteString.Char8 as B
-import           Database.Persist.TH
 import           Database.Persist.Sql
-import           Database.PostgreSQL.Simple.Time
-import           Control.Monad.Logger (runNoLoggingT, NoLoggingT, runStderrLoggingT)
 import Data.Time
 import qualified Data.Text as Te
-import qualified Data.List as L
-import qualified Data.Maybe as M
 import Data.Maybe
 import Data.Either
 import Control.Monad.IO.Class
-import Control.Applicative
-import Control.Monad.Trans.Resource
-import Control.Monad.Trans.Reader (ReaderT)
-import Control.Monad.Reader.Class
 import Control.Monad.Reader
 import qualified Data.Either.Combinators as EitherC
 import Debug.Trace
-import Text.RawString.QQ
 import qualified Data.Attoparsec.Text as Parsec
 import qualified Turtle as Tu 
 import Services.Types
 import Test.Helpers as Helpers
 
 import qualified Chess.Pgn.Logic as Pgn
-import qualified Chess.Logic as Logic
-
 import qualified Chess.Helpers as Helpers
 
-import qualified Chess.Board as Board
-import qualified Chess.Stockfish as Stockfish
 
 connString :: String -> String
 connString dbName = trace name name
@@ -61,6 +46,7 @@ connString dbName = trace name name
     name = "host=localhost dbname=chess_" ++ dbName ++ " user=postgres"
 
 
+keyReader :: forall record. Either (Entity record) (Key record) -> Key record
 keyReader = either entityKey id
 
 storeGameIntoDB :: Key Database -> Pgn.PgnGame -> DataAction (Maybe (Key Game))
@@ -83,7 +69,6 @@ storeGameIntoDB dbResult g = do
       mapM_ (\(name, val) -> Ps.insert (GameAttribute gameResult name val)) formattedTags
       return $ Just gameResult
     else do
-      liftIO $ print $ "NOT PARSED"
       liftIO $ print $ show g
 
         
@@ -166,21 +151,14 @@ dateStringParse = do
 
 readTextIntoDB :: MonadIO m => String -> String -> Te.Text -> Bool -> m (Ps.Key Database, [Maybe (Ps.Key Game)])
 readTextIntoDB dbName chessDBName text isPublic = do
-  res <- liftIO $ inBackend (connString dbName) $ do
-    dbResult <- Ps.insert (TestThing "test")
-    return dbResult
   res <- liftIO $ inBackend (connString dbName) $ readTextWithPersist chessDBName text isPublic
   return res
 
+readTextWithPersist :: String -> Tu.Text -> Bool -> DataAction (Key Database, [Maybe (Key Game)])
 readTextWithPersist chessDBName text isPublic = do
   dbResult <- Ps.insert (Database chessDBName isPublic)
   let games = Pgn.getGamesFromText text
 
   gameResults <- mapM (storeGameIntoDB dbResult) $ rights games
   PsP.transactionSave
-  liftIO $ print $ "Number of games: " ++ show (length games)
-  liftIO $ print $ "Length: " ++ show (Te.length text)
-  liftIO $ print $ "Number of games correctly parsed: " ++ show (length $ rights games)
-  liftIO $ print $ "Number of games stored: " ++ show (length gameResults)
-  liftIO $ print $ "Number of games stored: " ++ show gameResults
   return (dbResult, gameResults)

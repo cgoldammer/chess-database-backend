@@ -20,9 +20,7 @@ where
 import Services.Types
 import qualified Database.Persist as Ps
 import qualified Database.Persist.Postgresql as PsP
-import           Control.Monad.Logger (runNoLoggingT, NoLoggingT, runStderrLoggingT)
-import Data.Time
-import Services.Types
+import           Control.Monad.Logger (NoLoggingT, runStderrLoggingT)
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Resource
 import Control.Monad.Trans.Reader (ReaderT)
@@ -38,16 +36,8 @@ inBackend :: String -> DataAction a -> IO a
 inBackend conn action = runStderrLoggingT $ PsP.withPostgresqlPool (B.pack conn) 1 $ \pool -> liftIO $ do
   flip PsP.runSqlPersistMPool pool $ do
     PsP.runMigration migrateAll
-    text <- PsP.runMigrationSilent migrateAll
-    liftIO $ print "Migration done"
-    liftIO $ print $ show text
+    PsP.runMigrationSilent migrateAll
     action
-
--- | Run a database action (taken from snaplet-persistent)
-withPool :: MonadIO m
-         => PsP.ConnectionPool
-         -> PsP.SqlPersistM a -> m a
-withPool cp f = liftIO . runResourceT . runNoLoggingT $ PsP.runSqlPool f cp
 
 -- My goal: Use the `HasPersistPool` typeclass for all database actions. That
 -- unifies the code I run in Snap and in the general IO Monad
