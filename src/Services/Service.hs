@@ -21,42 +21,42 @@
 module Services.Service where
 
 import GHC.Generics (Generic)
-import qualified Control.Lens as Lens
-import Control.Monad.State.Class as SC
-import Data.Aeson
-import Snap.Core
-import Snap.Snaplet
-import Snap.Snaplet.PostgresqlSimple
-import qualified Data.ByteString.Char8 as B
-import qualified Data.Text.Lazy as TL
-import Data.List
-import qualified Data.Text as T
-import qualified Data.Text.Template as Template
-import qualified Database.Persist as Ps
-import qualified Database.Persist.Postgresql as PsP
-import Database.Esqueleto
+import Control.Lens (makeLenses)
+import Control.Monad.State.Class (get, gets)
+import qualified Control.Monad.State.Lazy as St (State, get)
+import Data.Aeson (FromJSON, ToJSON)
+import Snap.Core (writeBS)
+import Snap.Snaplet (Snaplet, MonadSnaplet, SnapletInit, Handler, with, getSnapletUserConfig, makeSnaplet, nestSnaplet, addRoutes)
+import Snap.Snaplet.PostgresqlSimple (Postgres, HasPostgres, getPostgresState, setLocalPostgresState, pgsInit)
+import qualified Data.ByteString.Char8 as B (pack, ByteString)
+import Data.List (groupBy)
+import qualified Data.Text as T (Text, pack, unpack)
+import qualified Data.Text.Lazy as TL (toStrict)
+import Data.Text.Template (Context, substitute)
+import Database.Persist (insert, insert_)
+import qualified Database.Persist.Postgresql as PsP (get, getBy, entityVal)
+import Database.Esqueleto hiding (get)
 
 import Control.Monad.IO.Class (liftIO, MonadIO)
-import Snap.Snaplet.Persistent
+import Snap.Snaplet.Persistent (PersistState, HasPersistPool, getPersistPool, initPersistGeneric, runPersist)
 import Data.Maybe (isJust)
 import Servant.API hiding (GET)
 import Servant (serveSnap, Server)
-import Data.Maybe
+import Data.Maybe (listToMaybe)
 import Data.Proxy (Proxy(..))
-import qualified Data.Time.Clock as C
-import qualified Data.Map as M
-import Data.List as L
-import Text.RawString.QQ
-import Debug.Trace
-import           Data.IORef
+import Data.Time.Clock (getCurrentTime)
+import Data.Map (Map, toList)
+import Data.List (lookup)
+import Text.RawString.QQ (r)
+import Data.IORef (IORef, readIORef, writeIORef, newIORef)
 
-import           Control.Monad.Logger (runNoLoggingT, NoLoggingT)
+import Control.Monad.Logger (runNoLoggingT, NoLoggingT)
 import qualified Database.Persist.Postgresql as PG
-import Data.Configurator as DC
+import qualified Data.Configurator as DC (lookup)
+
 import Services.Types
 import qualified Services.Helpers as Helpers
-import qualified Services.DatabaseHelpers as DatabaseHelpers
-import qualified Control.Monad.State.Lazy as St
+import Services.DatabaseHelpers (connString, readTextIntoDB, listToInClause)
 import qualified Test.Fixtures as TF
 import qualified Test.Helpers as TH
 
@@ -70,13 +70,13 @@ data Service = Service {
     _servicePG :: Snaplet Postgres
   , _serviceDB :: Snaplet PersistState
   , _serviceCurrentUser :: IORef (Maybe String)}
-Lens.makeLenses ''Service
+makeLenses ''Service
 
 instance HasPersistPool (Handler b Service) where
   getPersistPool = with serviceDB getPersistPool
 
 instance HasPostgres (Handler b Service) where
-  getPostgresState = with servicePG SC.get
+  getPostgresState = with servicePG get
   setLocalPostgresState = undefined
 
 type LoginUser = Maybe Int
@@ -93,26 +93,19 @@ initPersistWithDB :: String -> SqlPersistT (NoLoggingT IO) a -> SnapletInit b Pe
 initPersistWithDB dbName = initPersistGeneric $ mkSnapletPgPoolWithDB dbName
 
 currentUserName :: Handler b Service (Maybe String)
-currentUserName = do
-  nameRef <- gets _serviceCurrentUser
-  usr <- liftIO $ readIORef nameRef
-  return usr
-
-
-data ImpMove = ImpMove { impMove :: String, impBest :: String, impWhite :: String, impBlack :: String, impMoveEval :: String, impBestEval :: String } deriving (Generic, FromJSON, ToJSON)
-
-
-test :: MonadIO m => SqlPersistT m [Entity AppUser]
-test = do
-  users <- select $ from $ \usr -> do
-    return usr
-  return users
+currentUserName = gets _serviceCurrentUser >>= (liftIO . readIORef)
 
 changeUser :: Maybe String -> Handler b Service ()
-changeUser value = do
-  nameRef <- gets _serviceCurrentUser
-  liftIO $ writeIORef nameRef value
-  return ()
+changeUser value = gets _serviceCurrentUser >>= liftIO . ((flip writeIORef) value)
+
+data ImpMove = ImpMove { 
+  impMove :: String
+, impBest :: String
+, impWhite :: String
+, impBlack :: String
+, impMoveEval :: String
+, impBestEval :: String
+} deriving (Generic, FromJSON, ToJSON)
 
 
 getPlayers :: DefaultSearchData -> Handler b Service [Entity Player]
@@ -142,8 +135,6 @@ getDatabases = do
     return $ dbsPublic ++ dbsPersonal
   return dbs
   
-
-
 getTournaments :: DefaultSearchData -> Handler b Service [Entity Tournament]
 getTournaments searchData = runPersist $ do
   let db = val $ intToKeyDB $ searchDB searchData
@@ -250,13 +241,6 @@ type T = (Single Int, Single Int)
 useRes :: T -> String
 useRes (Single x, _) = show x
 
-queryTest :: Handler b Service ()
-queryTest = do
-  let sql = "SELECT game_id, (1 - game_id) FROM game_attribute"
-  res :: [T] <- runPersist $ rawSql sql []
-  writeLBS . encode $ fmap useRes res
-  return ()
-
 data MoveRequestData = MoveRequestData {moveRequestDB :: Int, moveRequestTournaments :: [Int] } deriving (Generic, FromJSON, ToJSON, Show)
 
 data ResultPercentage = ResultPercentage {
@@ -272,34 +256,19 @@ type GameList = [Int]
 type GameEvaluation = Int
 type Performance = Int
 type ResultByEvaluation = [(Int, [(GameEvaluation, Performance)])]
-type TT = M.Map Int [GameEvaluation] -- deriving (Generic, ToJSON)
+type TT = Map Int [GameEvaluation] -- deriving (Generic, ToJSON)
 
 
 parseEvalResults :: (Single Int, Single Int, Single Int, Single Int) -> (Int, GameEvaluation, Performance)
 parseEvalResults (_, Single playerId, Single evaluation, Single result) = (playerId, evaluation, result)
 
 
-toList :: (Single Int, Single Int) -> Int
-toList (Single a, _) = a
-
-listToInClause :: [Int] -> String
-listToInClause ints = clause
-  where intStrings = (fmap show ints) :: [String]
-        clause = "(" ++ (intercalate ", " intStrings) ++ ")"
-
-
-
-
-
-
-
-
-
+firstInt :: (Single Int, Single Int) -> Int
+firstInt (Single a, _) = a
 
 -- The evaluation of a move is eval - lag(eval, 1) by game. Top-code at 0.
 -- then average by game and color.
 -- After that, merge onto the game table and obtain the performance by each player.
-
 viewQuery :: T.Text
 viewQuery = [r|
 CREATE OR REPLACE VIEW moveevals as (
@@ -322,27 +291,14 @@ evalQueryTemplate = [r|
   SELECT game_id, player_black_id as player_id, avg(cploss)::Int as cploss, avg((-game_result+1)*100/2)::Int as result from me_player WHERE not is_white group by game_id, player_black_id;
 |]
 
-testQueryTemplate :: T.Text
-testQueryTemplate = [r| SELECT id, id from game where id in $c|]
-
-testQueryString :: [Int] -> T.Text
-testQueryString ints = TL.toStrict $ Template.substitute testQueryTemplate cont
-  where cont = context [("c", listToInClause ints)]
-
 evalQueryString :: [Int] -> T.Text
-evalQueryString ints = TL.toStrict $ Template.substitute evalQueryTemplate cont
+evalQueryString ints = TL.toStrict $ substitute evalQueryTemplate cont
   where cont = context [("gameList", listToInClause ints)]
 
 -- | Create 'Context' from association list.
-context :: [(String, String)] -> Template.Context
-context assocs x = T.pack $ maybe err id . L.lookup (T.unpack x) $ assocs
+context :: [(String, String)] -> Context
+context assocs x = T.pack $ maybe err id . lookup (T.unpack x) $ assocs
   where err = error $ "Could not find key: " ++ T.unpack x
-
-testQuery :: Handler b Service [Int]
-testQuery = do
-  let vals = take 100 $ [0..100]
-  results <- trace (T.unpack (testQueryString vals)) $ runPersist $ rawSql (testQueryString vals) []
-  return $ fmap toList $ results
 
 getResultByEvaluation :: GameList -> Handler b Service ResultByEvaluation
 getResultByEvaluation gl = do
@@ -350,7 +306,7 @@ getResultByEvaluation gl = do
   results <- runPersist $ rawSql (evalQueryString gl) []
   let parsed = fmap parseEvalResults results
   let grouped = (fmap . fmap) (\(_, b, c) -> (b, c)) $ Helpers.groupWithVal (\(a, _, _) -> a) parsed
-  return $ M.toList grouped
+  return $ toList grouped
 
 
 
@@ -373,7 +329,7 @@ addEvaluations request = do
   return $ length $ concat evaluations
 
 gamesInDB :: String -> Key Database -> Bool -> IO [Entity Game]
-gamesInDB dbName dbKey overwrite = TH.inBackend (DatabaseHelpers.connString dbName) $ do
+gamesInDB dbName dbKey overwrite = TH.inBackend (connString dbName) $ do
   let db = val dbKey
   evaluatedGames :: [Entity Game] <- select $ distinct $
     from $ \(g, me) -> do
@@ -400,14 +356,14 @@ uploadDB :: UploadData -> Handler b Service UploadResult
 uploadDB upload = do
   let (name, text) = (uploadName upload, uploadText upload)
   dbName <- getDBName
-  (db, results) <- liftIO $ DatabaseHelpers.readTextIntoDB dbName name text False
+  (db, results) <- liftIO $ readTextIntoDB dbName name text False
   currentUser :: Maybe String <- currentUserName
   addDBPermission db currentUser
   return $ UploadResult $ Just $ length results
 
 addDBPermission :: Key Database -> Maybe String -> Handler b Service (Key DatabasePermission)
 addDBPermission dbResult userName = do
-  permission <- runPersist $ Ps.insert $ DatabasePermission dbResult (maybe "" id userName) True True False
+  permission <- runPersist $ insert $ DatabasePermission dbResult (maybe "" id userName) True True False
   return permission
 
 data GameRequestData = GameRequestData {
@@ -417,7 +373,6 @@ data GameRequestData = GameRequestData {
 
 type ChessApi m = 
        "user"     :> Get '[JSON] (Maybe AppUser) 
-  :<|> "test" :> Get '[JSON] Int
   :<|> "players" :> ReqBody '[JSON] DefaultSearchData :> Post '[JSON] [Entity Player]
   :<|> "tournaments" :> ReqBody '[JSON] DefaultSearchData :> Post '[JSON] [Entity Tournament]
   :<|> "databases" :> Get '[JSON] [Entity Database]
@@ -429,15 +384,12 @@ type ChessApi m =
   :<|> "uploadDB" :> ReqBody '[JSON] UploadData :> Post '[JSON] UploadResult
   :<|> "addEvaluations" :> ReqBody '[JSON] EvaluationRequest :> Post '[JSON] EvaluationResult 
   :<|> "getResultByEvaluation" :> ReqBody '[JSON] GameList :> Post '[JSON] ResultByEvaluation
-  :<|> "testQuery" :> Get '[JSON] [Int]
 
 chessApi :: Proxy (ChessApi (Handler b Service))
 chessApi = Proxy
 
-
 apiServer :: Server (ChessApi (Handler b Service)) (Handler b Service)
 apiServer =      getMyUser 
-            :<|> getTest
             :<|> getPlayers
             :<|> getTournaments 
             :<|> getDatabases 
@@ -449,14 +401,10 @@ apiServer =      getMyUser
             :<|> uploadDB
             :<|> addEvaluations
             :<|> getResultByEvaluation
-            :<|> testQuery
   where
-    getTest = do
-      return 1
-    getMyUser = do
-      usr <- currentUserName 
-      users <- runPersist $ selectUser $ fmap T.pack usr
-      return $ listToMaybe users
+
+getMyUser :: Handler b Service (Maybe AppUser)
+getMyUser = currentUserName >>= runPersist . selectUser . fmap T.pack 
 
 type ResultPercentageQueryResult = (Single Int, Single Int, Single Int, Single Int)
 
@@ -561,62 +509,27 @@ serviceInit dbName = makeSnaplet "chess" "Chess Service" Nothing $ do
 chessRoutes :: [(B.ByteString, Handler b Service ())]
 chessRoutes = [("user2", writeBS "user test")] ++ [("", serveSnap chessApi apiServer)]
 
--- getUser :: SnapletLens b (AuthManager b) -> Handler b Service ()
--- getUser auth = do
---   cur <- currentUserName
---   let x = maybe 0 id $ fmap (read . T.unpack) (fmap unUid $ join $ fmap userId user) :: Int
---   writeLBS . encode $ x
-
--- chessCreateUser :: T.Text -> Handler b Service ()
--- chessCreateUser name = do
---   time <- liftIO C.getCurrentTime
---   -- Todo: Insert actual id
---   let n = Just $ T.unpack name
---   runPersist $ Ps.insert_ $ AppUser 1 n time
---   return ()
 
 -- A useful handler for testing
 nothingHandler :: Handler b Service ()
 nothingHandler = do
   return ()
 
+-- |Create a default app user. The id for the app user is the user name.
 createAppUser :: T.Text -> Handler b Service ()
 createAppUser userLogin = do
-  time <- liftIO C.getCurrentTime
-  runPersist $ Ps.insert_ $ AppUser (T.unpack userLogin) Nothing time
+  time <- liftIO getCurrentTime
+  runPersist $ insert_ $ AppUser (T.unpack userLogin) Nothing time
   return ()
 
-selectUser :: MonadIO m => Maybe T.Text -> SqlPersistT m [AppUser]
+-- |Obtain the app user by user name.
+selectUser :: MonadIO m => Maybe T.Text -> SqlPersistT m (Maybe AppUser)
 selectUser (Just userId) = do
   users <- select $ from $ \usr -> do
-    let idString = T.unpack userId :: String
-    -- let idKey = (toSqlKey . fromIntegral) idString
-    where_ $ usr ^. AppUserUserId ==. val idString
+    where_ $ usr ^. AppUserUserId ==. val (T.unpack userId)
     return usr
-  return $ entityVal <$> users
-selectUser Nothing = do
-  return []
+  return $ entityVal <$> listToMaybe users
+selectUser Nothing = return Nothing
 
 userFields :: [B.ByteString]
 userFields = fmap B.pack ["name"]
-
--- postUser :: SnapletLens b (AuthManager b) -> Handler b Service ()
--- postUser = do
---   user :: Int <- withTop auth $ do
---     cur <- currentUser
---     let x = fmap unUid $ join $ fmap userId cur
---     return $ usId x
---   [name] <- mapM getPostParam userFields
---   usersFound  <- query "select id from user where id=?" [user]
---   if length (usersFound :: [Only Int]) > 0
---     then do
---       return ()
---     else do
---       execute "INSERT INTO level_user (id) values (?)" [user]
---       return ()
-
---   [Only userId] :: [Only Int] <- query "select id from level_user where id=?" [user]
---   when (isJust name) $ do
---     execute "UPDATE level_user SET name=? WHERE id=?" (name, user)
---     return ()
---   return ()

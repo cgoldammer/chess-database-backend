@@ -11,7 +11,15 @@ cabal-version:       >=1.10
 
 library
   hs-source-dirs:      src
-  exposed-modules: Application, Services.Service, Services.Types, Services.Helpers, Services.DatabaseHelpers, Test.Helpers, Test.Fixtures
+  exposed-modules: 
+      Application
+    , Services.Service
+    , Services.Types
+    , Services.StatsHelpers
+    , Services.Helpers
+    , Services.DatabaseHelpers
+    , Test.Helpers
+    , Test.Fixtures
   build-depends:
       base                      >= 4     && < 5
     , bytestring                >= 0.9.1 && < 0.11
@@ -55,6 +63,7 @@ library
     , turtle
     , system-filepath
     , template
+    , listsafe
 
 Executable app
   hs-source-dirs: src

@@ -17,26 +17,28 @@ module Test.Helpers (
   , deleteDBContents)
 where
 
-import Services.Types
-import qualified Database.Persist as Ps
-import qualified Database.Persist.Postgresql as PsP
-import           Control.Monad.Logger (NoLoggingT, runStderrLoggingT)
-import Control.Monad.IO.Class
-import Control.Monad.Trans.Resource
+import Database.Persist (deleteWhere, Filter)
+import Database.Persist.Postgresql as PsP (SqlBackend, withPostgresqlPool, runMigration, runSqlPersistMPool, runMigrationSilent)
+import Control.Monad.Logger (NoLoggingT, runStderrLoggingT)
+import Control.Monad.IO.Class (liftIO)
+import Control.Monad.Trans.Resource (ResourceT)
 import Control.Monad.Trans.Reader (ReaderT)
 import qualified Data.ByteString.Char8 as B
+
 import qualified Chess.Pgn.Logic as Pgn
+
+import Services.Types
 
 -- See https://stackoverflow.com/questions/34624469/crud-pattern-on-haskell-persistent
 --
 --
-type DataAction a = ReaderT PsP.SqlBackend (NoLoggingT (ResourceT IO)) a
+type DataAction a = ReaderT SqlBackend (NoLoggingT (ResourceT IO)) a
 
 inBackend :: String -> DataAction a -> IO a
-inBackend conn action = runStderrLoggingT $ PsP.withPostgresqlPool (B.pack conn) 1 $ \pool -> liftIO $ do
-  flip PsP.runSqlPersistMPool pool $ do
-    PsP.runMigration migrateAll
-    PsP.runMigrationSilent migrateAll
+inBackend conn action = runStderrLoggingT $ withPostgresqlPool (B.pack conn) 1 $ \pool -> liftIO $ do
+  flip runSqlPersistMPool pool $ do
+    runMigration migrateAll
+    runMigrationSilent migrateAll
     action
 
 -- My goal: Use the `HasPersistPool` typeclass for all database actions. That
@@ -44,13 +46,13 @@ inBackend conn action = runStderrLoggingT $ PsP.withPostgresqlPool (B.pack conn)
 
 deleteDBContents :: String -> IO ()
 deleteDBContents conn = inBackend conn $ do
-  Ps.deleteWhere ([] :: [Ps.Filter MoveEval])
-  Ps.deleteWhere ([] :: [Ps.Filter GameAttribute])
-  Ps.deleteWhere ([] :: [Ps.Filter PlayerRating])
-  Ps.deleteWhere ([] :: [Ps.Filter Game])
-  Ps.deleteWhere ([] :: [Ps.Filter Tournament])
-  Ps.deleteWhere ([] :: [Ps.Filter Player])
-  Ps.deleteWhere ([] :: [Ps.Filter Database])
+  deleteWhere ([] :: [Filter MoveEval])
+  deleteWhere ([] :: [Filter GameAttribute])
+  deleteWhere ([] :: [Filter PlayerRating])
+  deleteWhere ([] :: [Filter Game])
+  deleteWhere ([] :: [Filter Tournament])
+  deleteWhere ([] :: [Filter Player])
+  deleteWhere ([] :: [Filter Database])
   return ()
 
 formatForDB :: Pgn.PgnTag -> (String, String)

@@ -20,24 +20,25 @@
 
 module Services.DatabaseHelpers where
 
-import qualified Database.Persist as Ps
-import qualified Database.Persist.Postgresql as PsP
-import           Database.Persist.Sql
-import Data.Time
-import qualified Data.Text as Te
-import Data.Maybe
-import Data.Either
-import Control.Monad.IO.Class
-import Control.Monad.Reader
-import qualified Data.Either.Combinators as EitherC
-import Debug.Trace
-import qualified Data.Attoparsec.Text as Parsec
-import qualified Turtle as Tu 
-import Services.Types
-import Test.Helpers as Helpers
+import Database.Persist (insertBy, insert, Key)
+import Database.Persist.Postgresql (transactionSave)
+import Database.Persist.Sql (Entity, entityKey)
+import Data.Time (Day, fromGregorian)
+import qualified Data.Text as Te (pack, Text)
+import Data.Maybe (isJust, fromJust, listToMaybe)
+import Data.Either (rights)
+import Control.Monad.Reader (MonadIO, liftIO, join)
+import Data.Either.Combinators (rightToMaybe)
+import Debug.Trace (trace)
+import Data.Attoparsec.Text (parseOnly, many', Parser, digit, char)
+import qualified Turtle as Tu (Text)
+import Data.List (intercalate)
 
 import qualified Chess.Pgn.Logic as Pgn
 import qualified Chess.Helpers as Helpers
+
+import Test.Helpers as Helpers
+import Services.Types
 
 
 connString :: String -> String
@@ -63,10 +64,10 @@ storeGameIntoDB dbResult g = do
       let date = getDate tags -- Maybe Day
       -- Storing the game
       let gm = (Game dbResult playerWhite playerBlack resultInt tournament pgn date)
-      gameResult <- fmap keyReader $ Ps.insertBy gm
+      gameResult <- fmap keyReader $ insertBy gm
       -- Storing the tags
       let formattedTags = fmap formatForDB $ filter (not . isPlayer) tags
-      mapM_ (\(name, val) -> Ps.insert (GameAttribute gameResult name val)) formattedTags
+      mapM_ (\(name, val) -> insert (GameAttribute gameResult name val)) formattedTags
       return $ Just gameResult
     else do
       liftIO $ print $ show g
@@ -78,7 +79,7 @@ storeGameIntoDB dbResult g = do
 storeTournament :: Key Database -> RequiredTags -> DataAction (Key Tournament)
 storeTournament dbResult tags = do
   let (Pgn.PgnEvent eventName) = requiredEvent tags
-  result <- Ps.insertBy $ Tournament dbResult eventName
+  result <- insertBy $ Tournament dbResult eventName
   return $ keyReader result
 
 
@@ -87,8 +88,8 @@ storePlayers dbResult tags = do
   let (whitePlayer, blackPlayer) = (requiredWhitePlayer tags, requiredBlackPlayer tags)
   let (Pgn.PgnWhite (Pgn.Player firstWhite lastWhite)) = whitePlayer
   let (Pgn.PgnBlack (Pgn.Player firstBlack lastBlack)) = blackPlayer
-  whiteResult <- Ps.insertBy (Player dbResult firstWhite lastWhite)
-  blackResult <- Ps.insertBy (Player dbResult firstBlack lastBlack)
+  whiteResult <- insertBy (Player dbResult firstWhite lastWhite)
+  blackResult <- insertBy (Player dbResult firstBlack lastBlack)
   return (keyReader whiteResult, keyReader blackResult)
 
 
@@ -138,27 +139,34 @@ resultDBFormat (Pgn.PgnResult Pgn.Draw) = 0
 resultDBFormat _ = 0
 
 getDate :: [Pgn.PgnTag] -> Maybe Day
-getDate tags = join $ fmap (\(Pgn.PgnDate d) -> EitherC.rightToMaybe (Parsec.parseOnly dateStringParse (Te.pack d))) $ listToMaybe $ filter filterDate tags
+getDate tags = join $ fmap (\(Pgn.PgnDate d) -> rightToMaybe (parseOnly dateStringParse (Te.pack d))) $ listToMaybe $ filter filterDate tags
 
-dateStringParse :: Parsec.Parser Day
+dateStringParse :: Parser Day
 dateStringParse = do
-  year <- Parsec.many' Parsec.digit
-  Parsec.char '.'
-  month <- Parsec.many' Parsec.digit
-  Parsec.char '.'
-  day <- Parsec.many' Parsec.digit
+  year <- many' digit
+  char '.'
+  month <- many' digit
+  char '.'
+  day <- many' digit
   return $ fromGregorian (read year :: Integer) (read month :: Int) (read day :: Int)
 
-readTextIntoDB :: MonadIO m => String -> String -> Te.Text -> Bool -> m (Ps.Key Database, [Maybe (Ps.Key Game)])
+readTextIntoDB :: MonadIO m => String -> String -> Te.Text -> Bool -> m (Key Database, [Maybe (Key Game)])
 readTextIntoDB dbName chessDBName text isPublic = do
   res <- liftIO $ inBackend (connString dbName) $ readTextWithPersist chessDBName text isPublic
   return res
 
 readTextWithPersist :: String -> Tu.Text -> Bool -> DataAction (Key Database, [Maybe (Key Game)])
 readTextWithPersist chessDBName text isPublic = do
-  dbResult <- Ps.insert (Database chessDBName isPublic)
+  dbResult <- insert (Database chessDBName isPublic)
   let games = Pgn.getGamesFromText text
 
   gameResults <- mapM (storeGameIntoDB dbResult) $ rights games
-  PsP.transactionSave
+  transactionSave
   return (dbResult, gameResults)
+
+
+listToInClause :: [Int] -> String
+listToInClause ints = clause
+  where intStrings = (fmap show ints) :: [String]
+        clause = "(" ++ (intercalate ", " intStrings) ++ ")"
+

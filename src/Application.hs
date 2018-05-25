@@ -8,21 +8,21 @@
 module Application where
 
 ------------------------------------------------------------------------------
-import Control.Lens
-import Snap.Snaplet
-import Snap.Snaplet.Session
-import qualified Data.ByteString.Char8 as B
-import Snap.Snaplet.Persistent
-import qualified Data.Text as T
-import qualified Heist.Interpreted as I
-import           Data.Map.Syntax ((##))
-import Database.Persist.Sql
-import           Snap.Snaplet.Auth.Backends.Persistent
-import           Snap.Core
-import           Snap.Snaplet.Auth
-import           Snap.Snaplet.Heist
-import           Snap.Snaplet.Session.Backends.CookieSession
-import Debug.Trace
+import Control.Lens (makeLenses, view)
+import Snap.Snaplet (Snaplet, Handler, SnapletInit, subSnaplet, makeSnaplet, nestSnaplet, snapletValue, addRoutes, with, withTop)
+import Snap.Snaplet.Session (SessionManager)
+import qualified Data.ByteString.Char8 as B (ByteString, pack)
+import Snap.Snaplet.Persistent (PersistState, persistPool)
+import qualified Data.Text as T (Text, unpack)
+import Heist.Interpreted as I (bindSplices, textSplice)
+import Data.Map.Syntax ((##))
+import Database.Persist.Sql (runMigrationUnsafe)
+import Snap.Snaplet.Auth.Backends.Persistent (migrateAuth, initPersistAuthManager)
+import Snap.Core (writeBS, method, Method(..))
+import Snap.Snaplet.Auth (AuthManager, AuthFailure, AuthUser, loginUser, currentUser, userLogin, logout, registerUser)
+import Snap.Snaplet.Heist (Heist, HasHeist, heistLens, heistInit, heistLocal, render)
+import Snap.Snaplet.Session.Backends.CookieSession (initCookieSessionManager)
+import Debug.Trace (trace)
 
 import qualified Services.Service as S
 
@@ -63,9 +63,9 @@ routes = [
     ]
 
 handleLogins :: T.Text -> Handler App (AuthManager App) ()
-handleLogins authError = heistLocal (I.bindSplices errs) $ render "login_results"
+handleLogins authError = heistLocal (bindSplices errs) $ render "login_results"
   where
-      errs = "loginError" ## I.textSplice authError
+      errs = "loginError" ## textSplice authError
 
 
 nothingHandler :: Handler App (AuthManager App) ()

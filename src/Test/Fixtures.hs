@@ -13,19 +13,17 @@
 
 module Test.Fixtures where
 
-import qualified Database.Persist as Ps
-import           Database.Persist.Sql
-import qualified Data.Text as Te
-import Data.Either
-import Control.Monad.IO.Class
+import Database.Persist (Key, insertBy)
+import Database.Persist.Sql 
+import qualified Data.Text as Te (Text, pack)
+import Data.Either (rights)
 import Control.Monad.Trans.Reader (ReaderT)
-import Control.Monad.Reader.Class
-import Control.Monad.Reader
-import qualified Data.Either.Combinators as EitherC
-import Debug.Trace
-import Text.RawString.QQ
-import qualified Filesystem.Path.CurrentOS as FS
-import qualified Turtle as Tu
+import Control.Monad.Reader (MonadReader, MonadIO, runReaderT, reader, liftIO)
+import Data.Either.Combinators (rightToMaybe)
+import Debug.Trace (trace)
+import Text.RawString.QQ (r)
+import qualified Filesystem.Path.CurrentOS as FS (fromText)
+import qualified Turtle as Tu (strict, input, Text)
 
 import Services.Types
 import Test.Helpers as Helpers
@@ -33,7 +31,6 @@ import Services.DatabaseHelpers as DatabaseHelpers
 
 import qualified Chess.Pgn.Logic as Pgn
 import qualified Chess.Logic as Logic
-
 
 import qualified Chess.Board as Board
 import qualified Chess.Stockfish as Stockfish
@@ -99,12 +96,12 @@ storeGamesIntoDB = do
   dbName <- reader settingsDBName
   mapM_ storeFileIntoDB $ getFiles $ getDBType dbName
 
-storeFileIntoDB :: (MonadReader Settings m, MonadIO m) => String -> m [Maybe (Ps.Key Game)]
+storeFileIntoDB :: (MonadReader Settings m, MonadIO m) => String -> m [Maybe (Key Game)]
 storeFileIntoDB fileName = do
   dbName <- reader settingsDBName
   liftIO $ print $ "Database" ++ show dbName
-  (_, res) :: (Key Database, [Maybe (Ps.Key Game)]) <- liftIO $ inBackend (connString dbName) $ do
-    -- dbResult <- Ps.insert (Database fileName True)
+  (_, res) :: (Key Database, [Maybe (Key Game)]) <- liftIO $ inBackend (connString dbName) $ do
+    -- dbResult <- insert (Database fileName True)
     -- liftIO $ print $ "done with creation" ++ show dbResult
     let fullName = "./test/files/" ++ fileName
     fileText :: Te.Text <- Tu.strict $ Tu.input $ FS.fromText $ Te.pack fullName
@@ -146,7 +143,7 @@ doAndStoreEvaluationIO dbName dbGame = do
     (Just game) -> do
       summaries <- liftIO $ Pgn.gameSummaries game
       keys <- liftIO $ inBackend (connString dbName) $ do
-        k <- mapM Ps.insertBy $ evalToRow (entityKey dbGame) summaries
+        k <- mapM insertBy $ evalToRow (entityKey dbGame) summaries
         return $ rights k
       return keys
     Nothing ->
@@ -191,7 +188,7 @@ readRatingQuery (Single player_id, Single year, Single month, Single rating) = P
 addRatings :: DataAction ()
 addRatings = do
   results :: [RatingQueryType] <- rawSql ratingQuery []
-  mapM_ (Ps.insertBy . readRatingQuery) results
+  mapM_ (insertBy . readRatingQuery) results
   return ()
  
 
@@ -241,7 +238,7 @@ evalMate (Left n) = Just n
 
   
 dbGameToPGN :: Game -> Maybe Pgn.Game
-dbGameToPGN game = EitherC.rightToMaybe $ Logic.gameFromStart Pgn.pgnToMove $ Pgn.unsafeMoves $ Te.pack $ gamePgn game
+dbGameToPGN game = rightToMaybe $ Logic.gameFromStart Pgn.pgnToMove $ Pgn.unsafeMoves $ Te.pack $ gamePgn game
 
 
 
