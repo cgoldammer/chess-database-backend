@@ -45,7 +45,7 @@ import Servant (serveSnap, Server)
 import Data.Maybe (listToMaybe)
 import Data.Proxy (Proxy(..))
 import Data.Time.Clock (getCurrentTime)
-import Data.Map (Map, toList)
+import Data.Map (toList)
 import Data.List (lookup)
 import Text.RawString.QQ (r)
 import Data.IORef (IORef, readIORef, writeIORef, newIORef)
@@ -254,12 +254,12 @@ data DefaultSearchData = DefaultSearchData { searchDB :: Int } deriving (Generic
 
 type GameList = [Int]
 type GameEvaluation = Int
-type Performance = Int
-type ResultByEvaluation = [(Int, [(GameEvaluation, Performance)])]
-type TT = Map Int [GameEvaluation] -- deriving (Generic, ToJSON)
+type GameOutcome = Int
+type PlayerKey = Int
+type PlayerGameEvaluations = [(PlayerKey, [(GameEvaluation, GameOutcome)])]
 
 
-parseEvalResults :: (Single Int, Single Int, Single Int, Single Int) -> (Int, GameEvaluation, Performance)
+parseEvalResults :: (Single Int, Single Int, Single Int, Single Int) -> (PlayerKey, GameEvaluation, GameOutcome)
 parseEvalResults (_, Single playerId, Single evaluation, Single result) = (playerId, evaluation, result)
 
 
@@ -300,8 +300,8 @@ context :: [(String, String)] -> Context
 context assocs x = T.pack $ maybe err id . lookup (T.unpack x) $ assocs
   where err = error $ "Could not find key: " ++ T.unpack x
 
-getResultByEvaluation :: GameList -> Handler b Service ResultByEvaluation
-getResultByEvaluation gl = do
+gameEvaluations :: GameList -> Handler b Service PlayerGameEvaluations
+gameEvaluations gl = do
   runPersist $ rawExecute viewQuery []
   results <- runPersist $ rawSql (evalQueryString gl) []
   let parsed = fmap parseEvalResults results
@@ -383,7 +383,7 @@ type ChessApi m =
   :<|> "games" :> ReqBody '[JSON] GameRequestData :> Post '[JSON] [GameDataFormatted]
   :<|> "uploadDB" :> ReqBody '[JSON] UploadData :> Post '[JSON] UploadResult
   :<|> "addEvaluations" :> ReqBody '[JSON] EvaluationRequest :> Post '[JSON] EvaluationResult 
-  :<|> "getResultByEvaluation" :> ReqBody '[JSON] GameList :> Post '[JSON] ResultByEvaluation
+  :<|> "gameEvaluations" :> ReqBody '[JSON] GameList :> Post '[JSON] PlayerGameEvaluations
 
 chessApi :: Proxy (ChessApi (Handler b Service))
 chessApi = Proxy
@@ -403,7 +403,7 @@ apiServer =      getMyUser
             :<|> getGames
             :<|> uploadDB
             :<|> addEvaluations
-            :<|> getResultByEvaluation
+            :<|> gameEvaluations
 
 type ResultPercentageQueryResult = (Single Int, Single Int, Single Int, Single Int)
 

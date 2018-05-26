@@ -111,6 +111,7 @@ Executable app
     , transformers
     , system-filepath
     , template
+    , listsafe
   main-is: Main.hs
 
 
