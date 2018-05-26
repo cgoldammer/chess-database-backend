@@ -388,6 +388,9 @@ type ChessApi m =
 chessApi :: Proxy (ChessApi (Handler b Service))
 chessApi = Proxy
 
+getMyUser :: Handler b Service (Maybe AppUser)
+getMyUser = currentUserName >>= runPersist . selectUser . fmap T.pack 
+
 apiServer :: Server (ChessApi (Handler b Service)) (Handler b Service)
 apiServer =      getMyUser 
             :<|> getPlayers
@@ -401,10 +404,6 @@ apiServer =      getMyUser
             :<|> uploadDB
             :<|> addEvaluations
             :<|> getResultByEvaluation
-  where
-
-getMyUser :: Handler b Service (Maybe AppUser)
-getMyUser = currentUserName >>= runPersist . selectUser . fmap T.pack 
 
 type ResultPercentageQueryResult = (Single Int, Single Int, Single Int, Single Int)
 

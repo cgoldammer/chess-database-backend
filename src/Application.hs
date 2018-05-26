@@ -79,7 +79,6 @@ handleLoginSubmit = do
   let login = fmap (T.unpack . userLogin) user
   withTop service $ S.changeUser login
   return ()
--- handleLoginSubmit = loginUser "login" "password" Nothing (\err -> handleLogins ((T.pack . show) err)) (redirect "/test")
 
 resetUser :: Handler App App ()
 resetUser = do
@@ -94,7 +93,6 @@ registerNew = method POST $ registerUser "email" "password"
 
 handleNewUser :: Handler App (AuthManager App) ()
 handleNewUser = do 
-    -- redirect "test"
     res <- registerNew
     -- Registering creates a `snap_auth_user` in the database. However, we
     -- also want to create an `app_user` that is linked to the `snap_auth_user`,

@@ -89,7 +89,7 @@ getDBType _ = True
 
 getFiles :: IsTest -> [String]
 getFiles True = ["game.pgn"]
-getFiles False = ["tata2.pgn"]
+getFiles False = ["tata2018.pgn"]
 
 storeGamesIntoDB :: (MonadReader Settings m, MonadIO m) => m ()
 storeGamesIntoDB = do
@@ -150,8 +150,6 @@ doAndStoreEvaluationIO dbName dbGame = do
       return []
   return keys
 
-
-
 -- | Adds structured player ratings to the database.
 -- These ratings are already stored in raw format as part of the 
 -- `game_tag` table. Here, we turn this raw data into monthly player
@@ -161,7 +159,6 @@ doAndStoreEvaluationIO dbName dbGame = do
 -- a certain month, the `player_rating` table will not contain any data for this month.
 -- If you are using this data to report player ratings graphs, you might
 -- want to fill in this missing time period with the latest preceding rating.
-
 ratingQuery :: Tu.Text
 ratingQuery = [r|
 SELECT player_id, extract(year from date) as year, extract(month from date) as month, avg(rating)::Int
@@ -192,8 +189,6 @@ addRatings = do
   return ()
  
 
--- select where the game id cannot be found in move_eval
-
 sqlGamesAll :: Tu.Text
 sqlGamesAll = [r|
 SELECT ??
@@ -206,8 +201,6 @@ SELECT ??
 FROM game
 WHERE game.id not in (SELECT DISTINCT game_id from move_eval)
 |]
-
-
 
 getGamesFromDB :: Bool -> DataAction [Entity Game]
 getGamesFromDB continueEval = do
@@ -236,20 +229,5 @@ evalMate :: Stockfish.Evaluation -> Maybe Int
 evalMate (Right _) = Nothing
 evalMate (Left n) = Just n
 
-  
 dbGameToPGN :: Game -> Maybe Pgn.Game
 dbGameToPGN game = rightToMaybe $ Logic.gameFromStart Pgn.pgnToMove $ Pgn.unsafeMoves $ Te.pack $ gamePgn game
-
-
-
-  
-
--- Questions I can ask
--- What was the average evaluation of Magnus' games by move number (moves 10, 20, 30)
--- compared to Giri
--- restrict to games between 2015 and 2017 and opponents >= 2700
-
--- averageEvalByMoveNumber :: Player -> TimeRange -> [(Int, Int)]
-  
--- Controlling for own rating and opponent rating, what's the win and draw percentage
--- based on the computer evaluation?
