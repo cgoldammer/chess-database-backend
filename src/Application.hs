@@ -37,26 +37,37 @@ data App = App
 
 makeLenses ''App
 
+data AppType = Dev | Prod deriving Show
+data Settings = Settings {
+  appType :: AppType
+, showLogin :: Bool
+, appDBName :: String
+, appPort :: Int
+} deriving Show
+
 instance HasHeist App where
     heistLens = subSnaplet heist
 
 type AppHandler = Handler App App
 
+app :: Settings -> SnapletInit App App
+app settings = makeSnaplet "app" "An snaplet example application." Nothing $ do
+  let dbName = appDBName settings
+  h <- nestSnaplet "" heist $ heistInit "templates"
+  s <- nestSnaplet "sess" sess $ initCookieSessionManager "site_key.txt" "sess" Nothing (Just 3600)
+  d <- nestSnaplet "db" db $ S.initPersistWithDB dbName (runMigrationUnsafe migrateAuth)
+  a <- nestSnaplet "auth" auth $ initPersistAuthManager sess (persistPool $ view snapletValue d)
+  ls <- nestSnaplet "api" service $ S.serviceInit dbName
 
-app :: String -> SnapletInit App App
-app dbName = makeSnaplet "app" "An snaplet example application." Nothing $ do
-    h <- nestSnaplet "" heist $ heistInit "templates"
-    s <- nestSnaplet "sess" sess $ initCookieSessionManager "site_key.txt" "sess" Nothing (Just 3600)
-    d <- nestSnaplet "db" db $ S.initPersistWithDB dbName (runMigrationUnsafe migrateAuth)
-    a <- nestSnaplet "auth" auth $ initPersistAuthManager sess (persistPool $ view snapletValue d)
-    ls <- nestSnaplet "api" service $ S.serviceInit dbName
-    addRoutes routes
-    return $ App h s d a ls
+  addRoutes $ routes $ showLogin settings
+  return $ App h s d a ls
 
-routes :: [(B.ByteString, Handler App App ())]
-routes = [
-    ("test", writeBS "hi you"),
-    ("fail", writeBS "lgin error"),
+routes :: Bool -> [(B.ByteString, Handler App App ())]
+routes False = []
+routes True = routes False ++ loginRoutes
+
+loginRoutes :: [(B.ByteString, Handler App App ())]
+loginRoutes = [
     ("login", with auth handleLoginSubmit),
     ("register", with auth handleNewUser),
     ("logout", with auth handleLogout >> resetUser)

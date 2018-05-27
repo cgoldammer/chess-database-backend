@@ -14,19 +14,39 @@ import Data.Either
 import           Snap.Snaplet.Config
 import           Snap.Http.Server
 import           Snap.Snaplet
-import qualified System.Environment as Env
+import System.Environment (lookupEnv)
+import Control.Monad.IO.Class (liftIO)
 
-import           Application
+import           Application 
 
-defaultDB = "dev"
 
-getDBFromEnvironment :: IO String
-getDBFromEnvironment = do
-  envDB <- Env.lookupEnv "dbName"
-  return $ maybe defaultDB id envDB
+getSettings :: AppType -> Settings
+getSettings Dev = Settings Dev True (getDBName Dev) (getPortForApp Dev)
+getSettings Prod = Settings Prod False (getDBName Prod) (getPortForApp Prod)
+
+getAppType :: String -> AppType
+getAppType "prod" = Prod
+getAppType _ = Dev
+
+getDBName :: AppType -> String
+getDBName Dev = "dev"
+getDBName Prod = "prod"
+
+getPortForApp :: AppType -> Int
+getPortForApp Dev = 8000
+getPortForApp Prod = 8001
+
+
+readSettings :: IO Settings
+readSettings = do
+  appTypeEnv :: Maybe String <- liftIO $ lookupEnv "type"
+  let appType_ = maybe Dev getAppType appTypeEnv
+  return $ getSettings appType_
 
 main :: IO ()
 main = do
-  dbName <- getDBFromEnvironment
-  serveSnaplet defaultConfig $ app dbName
+  settings <- readSettings
+  print settings
+  let config = setPort (appPort settings) defaultConfig
+  serveSnaplet config $ app settings
 
