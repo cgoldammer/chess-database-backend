@@ -88,7 +88,7 @@ getDBType "prod" = False
 getDBType _ = True
 
 getFiles :: IsTest -> [String]
-getFiles True = ["game.pgn"]
+getFiles True = ["tata2018.pgn"]
 getFiles False = ["tata2018.pgn"]
 
 storeGamesIntoDB :: (MonadReader Settings m, MonadIO m) => m ()
@@ -217,9 +217,11 @@ evalToRowColor g n (Board.White) (ms : rest) = constructEvalMove g n True ms : e
 evalToRowColor g n (Board.Black) (ms : rest) = constructEvalMove g n False ms : evalToRowColor g (n + 1) (Board.White) rest
 
 constructEvalMove :: Key Game -> Int -> Bool -> Pgn.MoveSummary -> MoveEval
-constructEvalMove gm n isWhite (Pgn.MoveSummary mv mvBest evalMove _ _) = MoveEval gm n isWhite mvString mvBestString (evalInt evalMove) (evalMate evalMove)
+constructEvalMove gm n isWhite (Pgn.MoveSummary mv mvBest evalMove _ _ fen) = MoveEval gm n isWhite mvString mvBestString eval mate fen
   where mvString = Just $ Board.showMove mv
         mvBestString = Board.showMove mvBest
+        eval = evalInt evalMove
+        mate = evalMate evalMove
 
 evalInt :: Stockfish.Evaluation -> Maybe Int 
 evalInt (Right n) = Just n

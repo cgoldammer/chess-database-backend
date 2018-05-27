@@ -59,6 +59,7 @@ MoveEval json
   moveBest String
   eval Int Maybe
   mate Int Maybe
+  fen String
   UniqueMoveEval gameId moveNumber isWhite
 
 Player json
