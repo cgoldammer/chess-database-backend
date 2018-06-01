@@ -36,6 +36,7 @@ import Data.Text.Template (Context, substitute)
 import Database.Persist (insert, insert_)
 import qualified Database.Persist.Postgresql as PsP (get, getBy, entityVal)
 import Database.Esqueleto hiding (get)
+import Database.Persist.Sql (rawSql)
 
 import Control.Monad.IO.Class (liftIO, MonadIO)
 import Snap.Snaplet.Persistent (PersistState, HasPersistPool, getPersistPool, initPersistGeneric, runPersist)
@@ -45,7 +46,7 @@ import Servant (serveSnap, Server)
 import Data.Maybe (listToMaybe)
 import Data.Proxy (Proxy(..))
 import Data.Time.Clock (getCurrentTime)
-import Data.Map (toList)
+import Data.Map (Map, toList, mapWithKey)
 import Data.List (lookup)
 import Text.RawString.QQ (r)
 import Data.IORef (IORef, readIORef, writeIORef, newIORef)
@@ -149,6 +150,9 @@ intToKey = toSqlKey . fromIntegral
 
 intToKeyDB :: Int -> Key Database
 intToKeyDB = toSqlKey . fromIntegral
+
+intToKeyGame :: Int -> Key Game
+intToKeyGame = toSqlKey . fromIntegral
 
 
 data DataSummary = DataSummary { 
@@ -266,14 +270,29 @@ parseEvalResults (_, Single playerId, Single evaluation, Single result) = (playe
 firstInt :: (Single Int, Single Int) -> Int
 firstInt (Single a, _) = a
 
+
 -- The evaluation of a move is eval - lag(eval, 1) by game. Top-code at 0.
 -- then average by game and color.
 -- After that, merge onto the game table and obtain the performance by each player.
 viewQuery :: T.Text
 viewQuery = [r|
 CREATE OR REPLACE VIEW moveevals as (
-  SELECT game_id, is_white, move_number, greatest(((is_white :: Int)*2-1)*(eval - next_eval), 0) as cploss FROM (
-    SELECT game_id, is_white, move_number, eval, lead(eval) over (partition by game_id order by id) as next_eval
+  SELECT 
+    game_id
+  , is_white
+  , move_number
+  , greatest(is_white_int*(eval - next_eval), 0) as cploss
+  FROM (
+    SELECT 
+      game_id
+    , is_white
+    , (is_white :: Int)*2-1 as is_white_int
+    , move_number
+    , eval
+    , lead(eval) over (partition by game_id order by id) as next_eval
+    , mate
+    , fen
+    , lead(mate) over (partition by game_id order by id) as next_mate
     FROM move_eval) as lags);
 |]
 
@@ -291,8 +310,9 @@ evalQueryTemplate = [r|
   SELECT game_id, player_black_id as player_id, avg(cploss)::Int as cploss, avg((-game_result+1)*100/2)::Int as result from me_player WHERE not is_white group by game_id, player_black_id;
 |]
 
-evalQueryString :: [Int] -> T.Text
-evalQueryString ints = TL.toStrict $ substitute evalQueryTemplate cont
+
+substituteGameList :: T.Text -> GameList -> T.Text
+substituteGameList template ints = TL.toStrict $ substitute template cont
   where cont = context [("gameList", listToInClause ints)]
 
 -- | Create 'Context' from association list.
@@ -303,7 +323,7 @@ context assocs x = T.pack $ maybe err id . lookup (T.unpack x) $ assocs
 gameEvaluations :: GameList -> Handler b Service PlayerGameEvaluations
 gameEvaluations gl = do
   runPersist $ rawExecute viewQuery []
-  results <- runPersist $ rawSql (evalQueryString gl) []
+  results <- runPersist $ rawSql (substituteGameList evalQueryTemplate gl) []
   let parsed = fmap parseEvalResults results
   let grouped = (fmap . fmap) (\(_, b, c) -> (b, c)) $ Helpers.groupWithVal (\(a, _, _) -> a) parsed
   return $ toList grouped
@@ -384,6 +404,98 @@ type ChessApi m =
   :<|> "uploadDB" :> ReqBody '[JSON] UploadData :> Post '[JSON] UploadResult
   :<|> "addEvaluations" :> ReqBody '[JSON] EvaluationRequest :> Post '[JSON] EvaluationResult 
   :<|> "gameEvaluations" :> ReqBody '[JSON] GameList :> Post '[JSON] PlayerGameEvaluations
+  :<|> "moveEvaluations" :> ReqBody '[JSON] MoveEvaluationRequest :> Post '[JSON] [MoveEvaluationData]
+
+data MoveEvaluationRequest = MoveEvaluationRequest {
+  moveEvalGames :: GameList
+} deriving (Show, Generic, FromJSON)
+
+mer :: MoveEvaluationRequest
+mer = MoveEvaluationRequest [1183]
+
+da = getMoveEvaluationData mer
+da' = getMoveEvaluationData $ MoveEvaluationRequest [1183]
+
+back = TH.inBackend (connString "dev")
+
+getMoveEvaluationData :: MoveEvaluationRequest -> TH.DataAction [MoveEvaluationData]
+getMoveEvaluationData (MoveEvaluationRequest gl) = do
+  let gameIds = fmap intToKeyGame gl
+  results :: [(Entity Game, Entity MoveEval)] <- select $  
+    from $ \(g, me) -> do
+      where_ $ (me ^. MoveEvalGameId ==. g ^. GameId) &&. ((g ^. GameId) `in_` (valList gameIds))
+      return (g, me)
+  let cleaned = filter (highMoveLoss . moveEvalsMoveLoss) $ getEvalData results
+  return cleaned
+
+moveLossCutoff = 150
+highMoveLoss :: MoveLoss -> Bool
+highMoveLoss (MoveLossMate _)= True
+highMoveLoss (MoveLossCP x) = x >= moveLossCutoff
+
+
+moveEvaluationHandler :: MoveEvaluationRequest -> Handler b Service [MoveEvaluationData]
+moveEvaluationHandler mer = runPersist $ getMoveEvaluationData mer
+
+data MoveEvaluationData = MoveEvaluationData {
+  moveEvalsGame :: Entity Game
+, moveEvalsMoveEval :: MoveEval
+, moveEvalsMoveEvalNext :: MoveEval
+, moveEvalsMoveLoss :: MoveLoss
+} deriving (Show, Generic, ToJSON)
+
+
+data MoveLoss = MoveLossCP Int | MoveLossMate Int deriving (Show, Generic, ToJSON)
+
+getEvalData :: [(Entity Game, Entity MoveEval)] -> [MoveEvaluationData]
+getEvalData dat = concat lagged
+  where lagged = [fmap (evalHelper (fst (head list))) (withLag (fmap snd list)) | list <- grouped]
+        grouped = (fmap snd $ toList $ Helpers.groupWithVal (entityKey .fst) dat) :: [[(Entity Game, Entity MoveEval)]]
+
+evalHelper :: Entity Game -> (Entity MoveEval, Entity MoveEval) -> MoveEvaluationData
+evalHelper ga (meE, meLaggedE) = MoveEvaluationData ga me meLagged (getMoveLoss me meLagged)
+  where me = entityVal meE
+        meLagged = entityVal meLaggedE
+
+withLag :: [a] -> [(a, a)]
+withLag [] = []
+withLag [x] = []
+withLag (x1:x2:rest) = (x1, x2) : (withLag (x2 : rest))
+
+
+
+moveEvalsQueryTemplate :: T.Text
+moveEvalsQueryTemplate = [r|
+  SELECT 
+    g.id as game_id
+  , player_white_id , player_black_id
+  , is_white
+  , eval, next_eval
+  , mate, next_mate
+  , fen
+  FROM moveevals me
+  JOIN game g
+  ON me.game_id = g.id
+  WHERE g.id in $gameList
+  AND (
+       cploss >= ? 
+    OR ((mate is not null) AND (next_mate is null))
+  )
+|]
+
+getMoveLoss :: MoveEval -> MoveEval -> MoveLoss
+getMoveLoss meBefore meAfter = getMoveLossHelper evalBefore evalAfter mateBefore mateAfter
+  where evalBefore = moveEvalEval meBefore
+        evalAfter = moveEvalEval meAfter
+        mateBefore = moveEvalMate meBefore
+        mateAfter = moveEvalMate meAfter
+
+getMoveLossHelper :: Maybe Int -> Maybe Int -> Maybe Int -> Maybe Int -> MoveLoss
+getMoveLossHelper (Just before) (Just after) _ _ = MoveLossCP $ (max (after - before) 0)
+getMoveLossHelper _ _ (Just _) (Just _) = MoveLossCP 0
+getMoveLossHelper _ (Just _) (Just before) _ = MoveLossMate before
+getMoveLossHelper _ _ _ _= MoveLossCP 0
+
 
 chessApi :: Proxy (ChessApi (Handler b Service))
 chessApi = Proxy
@@ -404,6 +516,7 @@ apiServer =      getMyUser
             :<|> uploadDB
             :<|> addEvaluations
             :<|> gameEvaluations
+            :<|> moveEvaluationHandler
 
 type ResultPercentageQueryResult = (Single Int, Single Int, Single Int, Single Int)
 

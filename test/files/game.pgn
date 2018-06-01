@@ -39,3 +39,11 @@
 
 1. e4 e5 2. d3 d6 3. c3 c6 4. a3 a6 5. h3 h6 6. b3 b6 7. g3 g6
 1/2-1/2
+
+[Event "test2"]
+[White "C, Conny"]
+[Black "A, Anna"]
+[Result "0-1"]
+
+1. f3 e5 2. g4 Qh4#
+0-1
