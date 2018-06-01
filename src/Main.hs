@@ -17,24 +17,9 @@ import           Snap.Snaplet
 import System.Environment (lookupEnv)
 import Control.Monad.IO.Class (liftIO)
 
-import           Application 
+import AppTypes
+import Application 
 
-
-getSettings :: AppType -> Settings
-getSettings Dev = Settings Dev True (getDBName Dev) (getPortForApp Dev)
-getSettings Prod = Settings Prod False (getDBName Prod) (getPortForApp Prod)
-
-getAppType :: String -> AppType
-getAppType "prod" = Prod
-getAppType _ = Dev
-
-getDBName :: AppType -> String
-getDBName Dev = "dev"
-getDBName Prod = "prod"
-
-getPortForApp :: AppType -> Int
-getPortForApp Dev = 8000
-getPortForApp Prod = 8001
 
 
 readSettings :: IO Settings

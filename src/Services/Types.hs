@@ -81,6 +81,20 @@ AppUser json
   subscriptionTime UTCTime
   deriving Show
 
+OpeningCode json
+  code String
+
+OpeningName
+  name String
+
+OpeningVariation json
+  variationName String
+  fen String
+  standardMoves String
+  code OpeningCodeId
+  name OpeningNameId
+  UniqueOpeningName fen
+  
 TestThing json
   name String
 |]

@@ -5,7 +5,7 @@
 ------------------------------------------------------------------------------
 -- | This module defines our application's state type and an alias for its
 -- handler monad.
-module Application where
+module Application (App, app, routes, auth) where
 
 ------------------------------------------------------------------------------
 import Control.Lens (makeLenses, view)
@@ -13,18 +13,17 @@ import Snap.Snaplet (Snaplet, Handler, SnapletInit, subSnaplet, makeSnaplet, nes
 import Snap.Snaplet.Session (SessionManager)
 import qualified Data.ByteString.Char8 as B (ByteString, pack)
 import Snap.Snaplet.Persistent (PersistState, persistPool)
-import qualified Data.Text as T (Text, unpack)
-import Heist.Interpreted as I (bindSplices, textSplice)
-import Data.Map.Syntax ((##))
+import qualified Data.Text as T (unpack)
 import Database.Persist.Sql (runMigrationUnsafe)
 import Snap.Snaplet.Auth.Backends.Persistent (migrateAuth, initPersistAuthManager)
 import Snap.Core (writeBS, method, Method(..))
 import Snap.Snaplet.Auth (AuthManager, AuthFailure, AuthUser, loginUser, currentUser, userLogin, logout, registerUser)
-import Snap.Snaplet.Heist (Heist, HasHeist, heistLens, heistInit, heistLocal, render)
+import Snap.Snaplet.Heist (Heist, HasHeist, heistLens, heistInit)
 import Snap.Snaplet.Session.Backends.CookieSession (initCookieSessionManager)
 import Debug.Trace (trace)
 
 import qualified Services.Service as S
+import AppTypes
 
 ------------------------------------------------------------------------------
 data App = App
@@ -37,18 +36,9 @@ data App = App
 
 makeLenses ''App
 
-data AppType = Dev | Prod deriving Show
-data Settings = Settings {
-  appType :: AppType
-, showLogin :: Bool
-, appDBName :: String
-, appPort :: Int
-} deriving Show
 
 instance HasHeist App where
     heistLens = subSnaplet heist
-
-type AppHandler = Handler App App
 
 app :: Settings -> SnapletInit App App
 app settings = makeSnaplet "app" "An snaplet example application." Nothing $ do
@@ -72,12 +62,6 @@ loginRoutes = [
     ("register", with auth handleNewUser),
     ("logout", with auth handleLogout >> resetUser)
     ]
-
-handleLogins :: T.Text -> Handler App (AuthManager App) ()
-handleLogins authError = heistLocal (bindSplices errs) $ render "login_results"
-  where
-      errs = "loginError" ## textSplice authError
-
 
 nothingHandler :: Handler App (AuthManager App) ()
 nothingHandler = do

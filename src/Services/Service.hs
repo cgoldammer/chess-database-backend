@@ -46,7 +46,7 @@ import Servant (serveSnap, Server)
 import Data.Maybe (listToMaybe)
 import Data.Proxy (Proxy(..))
 import Data.Time.Clock (getCurrentTime)
-import Data.Map (Map, toList, mapWithKey)
+import Data.Map (toList)
 import Data.List (lookup)
 import Text.RawString.QQ (r)
 import Data.IORef (IORef, readIORef, writeIORef, newIORef)
@@ -410,14 +410,6 @@ data MoveEvaluationRequest = MoveEvaluationRequest {
   moveEvalGames :: GameList
 } deriving (Show, Generic, FromJSON)
 
-mer :: MoveEvaluationRequest
-mer = MoveEvaluationRequest [1183]
-
-da = getMoveEvaluationData mer
-da' = getMoveEvaluationData $ MoveEvaluationRequest [1183]
-
-back = TH.inBackend (connString "dev")
-
 getMoveEvaluationData :: MoveEvaluationRequest -> TH.DataAction [MoveEvaluationData]
 getMoveEvaluationData (MoveEvaluationRequest gl) = do
   let gameIds = fmap intToKeyGame gl
@@ -428,7 +420,9 @@ getMoveEvaluationData (MoveEvaluationRequest gl) = do
   let cleaned = filter (highMoveLoss . moveEvalsMoveLoss) $ getEvalData results
   return cleaned
 
+moveLossCutoff :: Int
 moveLossCutoff = 150
+
 highMoveLoss :: MoveLoss -> Bool
 highMoveLoss (MoveLossMate _)= True
 highMoveLoss (MoveLossCP x) = x >= moveLossCutoff
@@ -459,7 +453,7 @@ evalHelper ga (meE, meLaggedE) = MoveEvaluationData ga me meLagged (getMoveLoss 
 
 withLag :: [a] -> [(a, a)]
 withLag [] = []
-withLag [x] = []
+withLag [_] = []
 withLag (x1:x2:rest) = (x1, x2) : (withLag (x2 : rest))
 
 

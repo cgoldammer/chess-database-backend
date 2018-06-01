@@ -12,7 +12,7 @@ import Database.Persist.Sql
 import Snap.Snaplet.Persistent
 import Database.Esqueleto
 import Data.Either
-import Data.Text as T
+import Data.Text as T (Text, pack)
 import Data.List as L
 import Data.Aeson
 import Data.Maybe as M
@@ -26,26 +26,9 @@ import Services.DatabaseHelpers as DBH
 import Services.Types
 import qualified Test.Fixtures as Fix
 
-import qualified Application as AppMain
+import AppTypes
+import qualified Application as App
 
--- testAverage = 3 ~?= (5 :: Int)
-
--- foo :: Int -> Int
--- foo x = 4
-
--- t = TestCase $ assertEqual "foo" 1 (foo 2)
-
--- -- padEvals :: Int -> GameResult -> [(Int, Int)] -> [(Int, Int)]
-
--- testPadWin = actual ~?= expected
---   where actual = Helpers.padEvals 3 Helpers.Win [(1,100), (2, 400)]
---         expected = [(1, 100), (2, Helpers.maxEval), (3, Helpers.maxEval)]
-
--- testPadLose = actual ~?= expected
---   where actual = Helpers.padEvals 4 Helpers.Lose [(1,100), (2, 200)]
---         expected = [(1, 100), (2, 200), (3, - Helpers.maxEval), (4, - Helpers.maxEval)]
-
--- tests = TestList ["Padding win" ~: testPadWin, "Padding lose" ~: testPadLose]
 main = do
   hspec $ do
     helperTest
@@ -54,11 +37,9 @@ main = do
 dbName :: String
 dbName = "test"
 
-
-
-registerTestUser :: Handler AppMain.App AppMain.App (Either AuthFailure AuthUser)
+registerTestUser :: Handler App.App App.App (Either AuthFailure AuthUser)
 registerTestUser = do
-  user <- with AppMain.auth $ registerUser (B.pack "hi") (B.pack "you")
+  user <- with App.auth $ registerUser (B.pack "hi") (B.pack "you")
   return user
 
 
@@ -88,13 +69,23 @@ dbKey :: P.PersistEntity a => Entity a -> Int
 dbKey = dbKeyInt . P.entityKey
 -- dbKey val = L.head $ catMaybes $ fmap keyInt $ (P.keyToValues . P.entityKey) val
 
+-- Setting up the database fixtures. This function is time-intensive, and run
+-- once before a set of tests is executed. These tests do not modify the data.
+-- Thus we want to set up this function that re-running it doesn't delete and
+-- re-insert the data, which shortens the time for running the tests
 doIO :: IO ()
 doIO = do
+  let dbName = "test"
+  dbDatabases :: [Entity Database] <- H.inBackend (DBH.connString dbName) $ do
+    selectList [] []
+
+  let alreadyRun = length dbDatabases > 0
+
   let runEval = True
   let onlyContinueEval = False
-  let dbName = "test"
-  let settings = Fix.Settings dbName runEval onlyContinueEval
-  Fix.runJob settings
+  let settings = Fix.FixtureSettings dbName runEval onlyContinueEval
+
+  if alreadyRun then (return ()) else Fix.runJob settings
   return ()
 
 defaultDBName = "game.pgn"
@@ -117,8 +108,7 @@ helperTest = Test.snap (route S.chessRoutes) (S.serviceInit dbName) $ do
         Test.shouldEqual (Just username) user
 
 testApi :: Spec
--- testApi = Test.snap (route S.chessRoutes) (S.serviceInit dbName) $ beforeAll_ doIO $ do
-testApi = Test.snap (route S.chessRoutes) (S.serviceInit dbName) $ do 
+testApi = Test.snap (route S.chessRoutes) (S.serviceInit dbName) $ beforeAll_ doIO $ do
   describe "In the database functions," $ do
     it "the databases function returns the right results" $ do
       -- Logging in as a new user that doesn't own any databases
@@ -136,14 +126,14 @@ testApi = Test.snap (route S.chessRoutes) (S.serviceInit dbName) $ do
       defaultDBId <- getDefaultDBId
       players :: [Entity Player] <- liftIO $ H.inBackend (DBH.connString dbName) $ do selectList [(P.==.) PlayerDatabaseId defaultDBId] []
       dbGames :: [Entity Game] <- liftIO $ H.inBackend (DBH.connString dbName) $ do selectList [(P.==.) GameDatabaseId defaultDBId] []
-      res <- Test.eval $ S.getResultByEvaluation $ fmap dbKey dbGames
+      res <- Test.eval $ S.gameEvaluations $ fmap dbKey dbGames
       Test.shouldEqual (L.length res) (L.length players)
 
     it "the move summaries are returned for every player" $ do
       defaultDBId <- getDefaultDBId
       players :: [Entity Player] <- liftIO $ H.inBackend (DBH.connString dbName) $ do selectList [(P.==.) PlayerDatabaseId defaultDBId] []
       dbGames :: [Entity Game] <- liftIO $ H.inBackend (DBH.connString dbName) $ do selectList [(P.==.) GameDatabaseId defaultDBId] []
-      res <- Test.eval $ S.getResultByEvaluation $ fmap dbKey dbGames
+      res <- Test.eval $ S.gameEvaluations $ fmap dbKey dbGames
       Test.shouldEqual (L.length res) (L.length players)
 
     it "one should only get games for the private databases that a user owns" $ do
@@ -222,8 +212,11 @@ testApi = Test.snap (route S.chessRoutes) (S.serviceInit dbName) $ do
         let values = maybe [] id $ parseGameData res
         Test.shouldEqual (L.length values) (L.length gamesForDB)
 
+
+settings = getSettings Test
+
 tests :: Spec
-tests = Test.snap (route AppMain.routes) (AppMain.app dbName) $ do
+tests = Test.snap (route (App.routes True)) (App.app settings) $ do
           describe "Application" $ do
             it "Register should 200" $ do
               Test.post "/register" params >>= Test.should200

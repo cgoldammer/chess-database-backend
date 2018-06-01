@@ -52,6 +52,7 @@ deleteDBContents conn = inBackend conn $ do
   deleteWhere ([] :: [Filter Game])
   deleteWhere ([] :: [Filter Tournament])
   deleteWhere ([] :: [Filter Player])
+  deleteWhere ([] :: [Filter DatabasePermission])
   deleteWhere ([] :: [Filter Database])
   return ()
 

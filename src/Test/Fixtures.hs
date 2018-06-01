@@ -25,6 +25,7 @@ import Text.RawString.QQ (r)
 import qualified Filesystem.Path.CurrentOS as FS (fromText)
 import qualified Turtle as Tu (strict, input, Text)
 
+import AppTypes
 import Services.Types
 import Test.Helpers as Helpers
 import Services.DatabaseHelpers as DatabaseHelpers
@@ -45,21 +46,20 @@ import qualified Chess.Stockfish as Stockfish
 -- By default, data is not overwritten. If the program is stopped in the middle of inserting data
 -- then running it again should simply continue the data insertion.
 --
-data Settings = Settings { 
+data FixtureSettings = FixtureSettings { 
     settingsDBName :: String
   , settingsRunEval :: Bool
   , settingsOnlyContinueEval :: Bool} deriving (Show)
 
-type IsTest = Bool
 type OnlyContinue = Bool
 
-data SettingsInput = SettingsInput IsTest OnlyContinue
+data SettingsInput = SettingsInput AppType OnlyContinue
 
 doNothing :: IO ()
 doNothing = do
   return ()
 
-runJob :: Settings -> IO ()
+runJob :: FixtureSettings -> IO ()
 runJob settings = do
   let conn = connString $ settingsDBName settings
   let onlyContinueEval = settingsOnlyContinueEval settings
@@ -67,11 +67,11 @@ runJob settings = do
   runReaderT readerActions settings
   return ()
 
-doNothing' :: ReaderT Settings IO ()
+doNothing' :: ReaderT FixtureSettings IO ()
 doNothing' = do
   return ()
 
-readerActions :: ReaderT Settings IO ()
+readerActions :: ReaderT FixtureSettings IO ()
 readerActions = do
   continue <- reader settingsOnlyContinueEval
   evaluate <- reader settingsRunEval
@@ -83,39 +83,28 @@ readerActions = do
       if evaluate then do evaluateGames else doNothing'
   return ()
 
-getDBType :: String -> IsTest
-getDBType "prod" = False
-getDBType _ = True
+getFiles :: AppType -> [String]
+getFiles Dev = ["game.pgn", "tata_small.pgn"]
+getFiles Prod = ["tata2018.pgn"]
+getFiles Test = ["game.pgn"]
 
-getFiles :: IsTest -> [String]
-getFiles True = ["game.pgn", "tata_small.pgn"]
-getFiles False = ["tata2018.pgn"]
-
-storeGamesIntoDB :: (MonadReader Settings m, MonadIO m) => m ()
+storeGamesIntoDB :: (MonadReader FixtureSettings m, MonadIO m) => m ()
 storeGamesIntoDB = do
   dbName <- reader settingsDBName
-  mapM_ storeFileIntoDB $ getFiles $ getDBType dbName
+  mapM_ storeFileIntoDB $ getFiles $ getAppType dbName
 
-storeFileIntoDB :: (MonadReader Settings m, MonadIO m) => String -> m [Maybe (Key Game)]
+storeFileIntoDB :: (MonadReader FixtureSettings m, MonadIO m) => String -> m [Maybe (Key Game)]
 storeFileIntoDB fileName = do
   dbName <- reader settingsDBName
   liftIO $ print $ "Database" ++ show dbName
   (_, res) :: (Key Database, [Maybe (Key Game)]) <- liftIO $ inBackend (connString dbName) $ do
-    -- dbResult <- insert (Database fileName True)
-    -- liftIO $ print $ "done with creation" ++ show dbResult
     let fullName = "./test/files/" ++ fileName
     fileText :: Te.Text <- Tu.strict $ Tu.input $ FS.fromText $ Te.pack fullName
     DatabaseHelpers.readTextIntoDB dbName fileName fileText True
   return res
 
-evaluateGames :: (MonadReader Settings m, MonadIO m) => m ()
+evaluateGames :: (MonadReader FixtureSettings m, MonadIO m) => m ()
 evaluateGames = do
-  isTest <- fmap getDBType $ reader settingsDBName
-  if isTest then evaluateGamesTest else evaluateGamesReal
-  return ()
-
-evaluateGamesReal :: (MonadReader Settings m, MonadIO m) => m ()
-evaluateGamesReal = do
   dbName <- reader settingsDBName
   continueEval <- reader settingsOnlyContinueEval
   games <- liftIO $ inBackend (connString dbName) $ do
@@ -125,12 +114,8 @@ evaluateGamesReal = do
   fmap concat $ mapM doEvaluation games2
   return ()
 
-evaluateGamesTest :: (MonadReader Settings m, MonadIO m) => m ()
-evaluateGamesTest = do
-  evaluateGamesReal
-  return ()
 
-doEvaluation :: (MonadReader Settings m, MonadIO m) => Entity Game -> m [Key MoveEval]
+doEvaluation :: (MonadReader FixtureSettings m, MonadIO m) => Entity Game -> m [Key MoveEval]
 doEvaluation dbGame  = do
   dbName <- reader settingsDBName
   doAndStoreEvaluationIO dbName dbGame

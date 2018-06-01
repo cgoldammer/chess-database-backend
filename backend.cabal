@@ -13,11 +13,13 @@ library
   hs-source-dirs:      src
   exposed-modules: 
       Application
+    , AppTypes
     , Services.Service
     , Services.Types
     , Services.StatsHelpers
     , Services.Helpers
     , Services.DatabaseHelpers
+    , Services.Openings
     , Test.Helpers
     , Test.Fixtures
   build-depends:
