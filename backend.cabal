@@ -66,6 +66,7 @@ library
     , system-filepath
     , template
     , listsafe
+    , directory
 
 Executable app
   hs-source-dirs: src
@@ -114,6 +115,7 @@ Executable app
     , system-filepath
     , template
     , listsafe
+    , directory
   main-is: Main.hs
 
 

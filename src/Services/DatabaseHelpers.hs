@@ -73,8 +73,6 @@ storeGameIntoDB dbResult openings g = do
       return $ Just gameResult
     else do
       liftIO $ print $ show g
-
-        
       return Nothing
 
 
@@ -159,14 +157,13 @@ readTextIntoDB dbName chessDBName text isPublic = do
 
 readTextWithPersist :: String -> Tu.Text -> Bool -> DataAction (Key Database, [Maybe (Key Game)])
 readTextWithPersist chessDBName text isPublic = do
-  dbResult <- insert (Database chessDBName isPublic)
+  dbResult <- insertBy (Database chessDBName isPublic)
+  let dbKey = keyReader dbResult
   let games = Pgn.getGamesFromText text
-
   openings <- getOpeningData
-
-  gameResults <- mapM (storeGameIntoDB dbResult openings) $ rights games
+  gameResults <- mapM (storeGameIntoDB dbKey openings) $ rights games
   transactionSave
-  return (dbResult, gameResults)
+  return (dbKey, gameResults)
 
 
 listToInClause :: [Int] -> String

@@ -24,6 +24,7 @@ import Debug.Trace (trace)
 import Text.RawString.QQ (r)
 import qualified Filesystem.Path.CurrentOS as FS (fromText)
 import qualified Turtle as Tu (strict, input, Text)
+import System.Directory (listDirectory)
 
 import AppTypes
 import Services.Types
@@ -83,25 +84,47 @@ readerActions = do
       if evaluate then do evaluateGames else doNothing'
   return ()
 
-getFiles :: AppType -> [String]
-getFiles Dev = ["dev/dummy_games.pgn", "dev/tata_small.pgn"]
-getFiles Test = ["dev/dummy_games.pgn"]
-getFiles Prod = ["prod/tata2018.pgn"]
+getFolderPgns :: String -> IO [String]
+getFolderPgns folder = do
+  allFiles :: [String] <- listDirectory $ "data/games/" ++ folder 
+  let extension = reverse . take 4 . reverse
+  let files = filter ((==".pgn") . extension) $ allFiles
+  return [folder ++ "/" ++ name | name <- files]
+
+fileSetsProd = [
+  ("World Championships 1886-2014", "prod/world_champion"), 
+  ("Candidates 2011-2018", "prod/candidates"), 
+  ("Wijk An Zee (Tata Steel) 2012-2018", "prod/wijk"),
+  ("Supertournaments 2017", "prod/super2017")]
+
+parseSet :: String -> String -> IO (String, [String])
+parseSet name folder = do
+  files :: [String] <- getFolderPgns folder
+  return (name, files)
+
+getFiles :: AppType -> IO [(String, [String])]
+getFiles Dev = return [("dummy games", ["dev/dummy_games.pgn"]), ("tata small", ["dev/tata_small.pgn"])]
+getFiles Test = return [("dummy games", ["dev/dummy_games.pgn"])]
+getFiles Prod = mapM (uncurry parseSet) fileSetsProd
+
 
 storeGamesIntoDB :: (MonadReader FixtureSettings m, MonadIO m) => m ()
 storeGamesIntoDB = do
   dbName <- reader settingsDBName
-  mapM_ storeFileIntoDB $ getFiles $ getAppType dbName
+  files <- liftIO (getFiles (getAppType dbName))
+  mapM_ storeFilesIntoDB files
 
-storeFileIntoDB :: (MonadReader FixtureSettings m, MonadIO m) => String -> m [Maybe (Key Game)]
-storeFileIntoDB fileName = do
+storeFile dbName databaseName fileName = do
+  let fullName = "./data/games/" ++ fileName
+  fileText <- Tu.strict $ Tu.input $ FS.fromText $ Te.pack fullName
+  DatabaseHelpers.readTextIntoDB dbName databaseName fileText True
+  return ()
+
+storeFilesIntoDB :: (MonadReader FixtureSettings m, MonadIO m) => (String, [String]) -> m ()
+storeFilesIntoDB (databaseName, fileNames) = do
   dbName <- reader settingsDBName
-  liftIO $ print $ "Database" ++ show dbName
-  (_, res) :: (Key Database, [Maybe (Key Game)]) <- liftIO $ inBackend (connString dbName) $ do
-    let fullName = "./data/games/" ++ fileName
-    fileText :: Te.Text <- Tu.strict $ Tu.input $ FS.fromText $ Te.pack fullName
-    DatabaseHelpers.readTextIntoDB dbName fileName fileText True
-  return res
+  liftIO $ inBackend (connString dbName) $ mapM_ (storeFile dbName databaseName) fileNames
+  return ()
 
 evaluateGames :: (MonadReader FixtureSettings m, MonadIO m) => m ()
 evaluateGames = do
