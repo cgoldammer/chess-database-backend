@@ -19,19 +19,24 @@ import Data.Maybe as M
 import Data.Aeson.Types
 import Data.Time
 import Data.Time.Clock.POSIX
+import Data.Either.Combinators (rightToMaybe)
 
 import Test.Helpers as H
 import Services.Service as S
 import Services.DatabaseHelpers as DBH
 import Services.Types
+import Services.Openings
 import qualified Test.Fixtures as Fix
+
+import Data.Attoparsec.Text (parseOnly)
 
 import AppTypes
 import qualified Application as App
 
 main = do
   hspec $ do
-    helperTest
+    openingTest
+    -- helperTest
     testApi
 
 dbName :: String
@@ -67,7 +72,6 @@ dbKeyInt key = L.head $ catMaybes $ fmap keyInt $ P.keyToValues key
 
 dbKey :: P.PersistEntity a => Entity a -> Int
 dbKey = dbKeyInt . P.entityKey
--- dbKey val = L.head $ catMaybes $ fmap keyInt $ (P.keyToValues . P.entityKey) val
 
 -- Setting up the database fixtures. This function is time-intensive, and run
 -- once before a set of tests is executed. These tests do not modify the data.
@@ -79,7 +83,7 @@ doIO = do
   dbDatabases :: [Entity Database] <- H.inBackend (DBH.connString dbName) $ do
     selectList [] []
 
-  let alreadyRun = length dbDatabases > 0
+  let alreadyRun = False -- length dbDatabases > 0
 
   let runEval = True
   let onlyContinueEval = False
@@ -97,6 +101,26 @@ getTimeString = fmap show getTimeInt
 
 getDefaultDBId = fmap (P.entityKey . L.head) $ liftIO $ H.inBackend (DBH.connString dbName) $ do selectList [(P.==.) DatabaseName defaultDBName] []
 
+expectedTest text expected parse = do
+  let result = parseOnly parse $ pack text
+  result `shouldBe` expected
+
+openingTest :: Spec
+openingTest = describe "The opening module" $ do
+  it "can correctly parse the code" $ 
+    expectedTest "A00" (Right "A00") openingCodeParser
+  it "can parse a simple opening name" $ 
+    expectedTest "Test' Opening" (Right "Test' Opening") openingNameParser
+  it "can parse a incorrect opening name" $ 
+    expectedTest "Test' Opening\n" (Right "Test' Opening") openingNameParser
+  it "can parse an opening name with comments" $ 
+    expectedTest "Test' Opening; comments" (Right "Test' Opening") openingNameParser
+  it "can parse a game move" $ 
+    expectedTest "1. e4 1/2" (Right "1. e4") openMoveParser
+  it "can parse the game list" $ 
+    expectedTest "A00 A\n1.a3 1/2" (Right (ListData "A00" "A" "1.a3")) parseListData
+  it "can parse the game list with newlines" $ 
+    expectedTest "A00 A\n1.a3 1/2\n\n\n" (Right (ListData "A00" "A" "1.a3")) parseListData
 
 helperTest :: Spec
 helperTest = Test.snap (route S.chessRoutes) (S.serviceInit dbName) $ do 
@@ -110,14 +134,17 @@ helperTest = Test.snap (route S.chessRoutes) (S.serviceInit dbName) $ do
 testApi :: Spec
 testApi = Test.snap (route S.chessRoutes) (S.serviceInit dbName) $ beforeAll_ doIO $ do
   describe "In the database functions," $ do
+    it "there was at least one database stored" $ do
+      dbDatabases :: [Entity Database] <- liftIO $ H.inBackend (DBH.connString dbName) $ do
+        selectList [] []
+      Test.shouldEqual (length dbDatabases > 0) True
+
     it "the databases function returns the right results" $ do
       -- Logging in as a new user that doesn't own any databases
         username <- liftIO $ getTimeString
         Test.eval $ loginForApi username
         Test.eval S.nothingHandler
         res <- Test.eval S.getDatabases
-        liftIO $ print "DATABAES RECEIVED"
-        liftIO $ print res
         dbDatabases :: [Entity Database] <- liftIO $ H.inBackend (DBH.connString dbName) $ do
           selectList [(P.==.) DatabaseIsPublic True] []
         Test.shouldEqual (L.length res) (L.length dbDatabases)
@@ -146,7 +173,7 @@ testApi = Test.snap (route S.chessRoutes) (S.serviceInit dbName) $ beforeAll_ do
       dbp <- backendInsert $ DatabasePermission db user True True True
       p <- backendInsert $ Player db "temp" "temp"
       t <- backendInsert $ Tournament db "temp"
-      game <- backendInsert $ Game db p p 1 t "" Nothing
+      game <- backendInsert $ Game db p p 1 t "" Nothing Nothing
       ga <- backendInsert $ GameAttribute game "test" "test"
       let request = S.getGames $ GameRequestData (dbKeyInt db) []
       games :: [GameDataFormatted] <- Test.eval request
@@ -225,21 +252,3 @@ runWithLogin :: String -> String -> Handler b b () -> Handler b b ()
 runWithLogin name password handler = do
   x <- handler
   return ()
-  
-  
-        
-            
--- Tests
--- If I am logged in and I upload a database, I can read it
--- I log out, log in as another user. Then I can't read the database
--- I can always read public databases, but I can't write to them
---
---
-
-
--- main :: IO ()
--- main = do
---   print ("testing" :: String)
---   runTestTT tests
---   return ()
-

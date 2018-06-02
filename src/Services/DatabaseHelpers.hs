@@ -22,7 +22,7 @@ module Services.DatabaseHelpers where
 
 import Database.Persist (insertBy, insert, Key)
 import Database.Persist.Postgresql (transactionSave)
-import Database.Persist.Sql (Entity, entityKey)
+import Database.Persist.Sql (Entity, entityKey, entityVal)
 import Data.Time (Day, fromGregorian)
 import qualified Data.Text as Te (pack, Text)
 import Data.Maybe (isJust, fromJust, listToMaybe)
@@ -39,6 +39,7 @@ import qualified Chess.Helpers as Helpers
 
 import Test.Helpers as Helpers
 import Services.Types
+import Services.Openings (OpeningMap(..), opVariation, getOpening, getOpeningData)
 
 
 connString :: String -> String
@@ -46,13 +47,14 @@ connString dbName = trace name name
   where 
     name = "host=localhost dbname=chess_" ++ dbName ++ " user=postgres"
 
-
 keyReader :: forall record. Either (Entity record) (Key record) -> Key record
 keyReader = either entityKey id
 
-storeGameIntoDB :: Key Database -> Pgn.PgnGame -> DataAction (Maybe (Key Game))
-storeGameIntoDB dbResult g = do
-  let pgn = Pgn.gamePgnFull $ Pgn.parsedPgnGame g
+storeGameIntoDB :: Key Database -> OpeningMap -> Pgn.PgnGame -> DataAction (Maybe (Key Game))
+storeGameIntoDB dbResult openings g = do
+  let game = Pgn.parsedPgnGame g
+  let opening = fmap (entityKey . opVariation) $ getOpening openings game
+  let pgn = Pgn.gamePgnFull game
   let tags = (Pgn.pgnGameTags g) :: [Pgn.PgnTag]
   let requiredTags = trace (show tags) $ parseRequiredTags tags
   if isJust requiredTags 
@@ -63,7 +65,7 @@ storeGameIntoDB dbResult g = do
       let resultInt = resultDBFormat $ requiredResult parsedTags
       let date = getDate tags -- Maybe Day
       -- Storing the game
-      let gm = (Game dbResult playerWhite playerBlack resultInt tournament pgn date)
+      let gm = (Game dbResult playerWhite playerBlack resultInt tournament pgn date opening)
       gameResult <- fmap keyReader $ insertBy gm
       -- Storing the tags
       let formattedTags = fmap formatForDB $ filter (not . isPlayer) tags
@@ -160,7 +162,9 @@ readTextWithPersist chessDBName text isPublic = do
   dbResult <- insert (Database chessDBName isPublic)
   let games = Pgn.getGamesFromText text
 
-  gameResults <- mapM (storeGameIntoDB dbResult) $ rights games
+  openings <- getOpeningData
+
+  gameResults <- mapM (storeGameIntoDB dbResult openings) $ rights games
   transactionSave
   return (dbResult, gameResults)
 

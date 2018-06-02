@@ -166,6 +166,8 @@ test-suite backend-test
     , persistent-postgresql
     , aeson
     , system-filepath
+    , attoparsec
+    , either
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N
 
 

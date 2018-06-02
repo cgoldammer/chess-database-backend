@@ -16,6 +16,7 @@ module Services.Types where
 import Data.Time (Day, UTCTime)
 import Database.Persist.TH (persistLowerCase, share, mkPersist, sqlSettings, mkMigrate)
 import Data.Aeson (toJSON)
+import Data.Map (Map)
 
 share [mkPersist sqlSettings, mkMigrate "migrateAll"] [persistLowerCase|
 Database json
@@ -44,6 +45,7 @@ Game json
   tournament TournamentId
   pgn String
   date Day Maybe
+  openingVariation OpeningVariationId Maybe
   UniqueGame databaseId playerWhiteId playerBlackId tournament pgn
 
 GameAttribute json
@@ -83,16 +85,13 @@ AppUser json
 
 OpeningCode json
   code String
-
-OpeningName
-  name String
+  UniqueOpeningCode code
 
 OpeningVariation json
   variationName String
   fen String
   standardMoves String
   code OpeningCodeId
-  name OpeningNameId
   UniqueOpeningName fen
   
 TestThing json
@@ -110,3 +109,4 @@ instance Show Game
 
 instance Show Player where
   show p = playerFirstName p ++ " " ++ playerLastName p
+
