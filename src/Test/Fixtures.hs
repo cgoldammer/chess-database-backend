@@ -84,9 +84,9 @@ readerActions = do
   return ()
 
 getFiles :: AppType -> [String]
-getFiles Dev = ["game.pgn", "tata_small.pgn"]
-getFiles Prod = ["tata2018.pgn"]
-getFiles Test = ["game.pgn"]
+getFiles Dev = ["dev/dummy_games.pgn", "dev/tata_small.pgn"]
+getFiles Test = ["dev/dummy_games.pgn"]
+getFiles Prod = ["prod/tata2018.pgn"]
 
 storeGamesIntoDB :: (MonadReader FixtureSettings m, MonadIO m) => m ()
 storeGamesIntoDB = do
@@ -98,7 +98,7 @@ storeFileIntoDB fileName = do
   dbName <- reader settingsDBName
   liftIO $ print $ "Database" ++ show dbName
   (_, res) :: (Key Database, [Maybe (Key Game)]) <- liftIO $ inBackend (connString dbName) $ do
-    let fullName = "./test/files/" ++ fileName
+    let fullName = "./data/games/" ++ fileName
     fileText :: Te.Text <- Tu.strict $ Tu.input $ FS.fromText $ Te.pack fullName
     DatabaseHelpers.readTextIntoDB dbName fileName fileText True
   return res
