@@ -146,9 +146,9 @@ movesByPlayer res = (fmap . fmap) keepRelevant groupedWithColor
         keepRelevant (gr, isWhite, (me, _)) = (gr, isWhite, entityVal me)
 
 data MoveSummary = MoveSummary {
-    moveSummaryKey :: String
-  , moveSummaryPlayer :: String
-  , moveSummaryEvaluations :: MoveAverage } deriving (Generic)
+  moveSummaryKey :: String
+, moveSummaryPlayer :: String
+, moveSummaryEvaluations :: MoveAverage } deriving (Generic)
 
 instance ToJSON MoveSummary where
   toJSON = genericToJSON defaultOptions { fieldLabelModifier = cleanSummName } 

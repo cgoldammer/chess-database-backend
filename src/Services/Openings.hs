@@ -3,18 +3,17 @@
 module Services.Openings where
 
 import Prelude hiding (lookup)
-import Data.Attoparsec.Text (Parser, parseOnly, takeWhile, string, digit, char, letter, space, endOfLine, skipWhile, anyChar, manyTill, takeTill, satisfy, inClass)
-import Data.Attoparsec.Combinator (many', option, many1')
-import Database.Persist (insertBy, insert, Key)
+import Data.Attoparsec.Text (Parser, parseOnly, string, digit, char, letter, space, endOfLine, skipWhile, anyChar, manyTill)
+import Data.Attoparsec.Combinator (many', many1')
+import Database.Persist (insertBy, Key)
 
 import Services.Types
 import Data.Text (pack, unpack, Text, splitOn)
 import Data.Map (lookup, Map, fromList)
-import Data.Maybe (listToMaybe, fromJust, catMaybes)
+import Data.Maybe (listToMaybe, catMaybes)
 import Data.Either.Combinators (rightToMaybe)
 import Data.Foldable (fold)
 import Turtle (input, strict)
-import Control.Monad (join)
 import Filesystem.Path.CurrentOS (fromText)
 import Database.Esqueleto hiding (get)
 
@@ -23,8 +22,6 @@ import qualified Chess.Pgn.Logic as Pgn
 import qualified Chess.Fen as Fen
 import Test.Helpers
 import Debug.Trace (trace)
-
-import Services.Types
 
 -- Todo: Remove this duplication
 connString :: String -> String
@@ -76,13 +73,12 @@ storeOpening code variationName standardMoves game = do
 
 tryStoreOpening :: ListData -> DataAction ()
 tryStoreOpening (ListData code variationName standardMoves) = do
-  let error = ("trying " ++ variationName)
-  let game = trace error $ Pgn.readSingleGame $ pack standardMoves
+  let game = Pgn.readSingleGame $ pack standardMoves
   either (\_ -> return ()) (storeOpening code variationName standardMoves) game
 
 getOpening :: OpeningMap -> ChessLogic.Game -> Maybe FullOpeningData
-getOpening map game = listToMaybe $ catMaybes $ sortedMatches
-  where sortedMatches = reverse $ (flip lookup) map <$> initialFens :: [Maybe FullOpeningData]
+getOpening mp game = listToMaybe $ catMaybes $ sortedMatches
+  where sortedMatches = reverse $ (flip lookup) mp <$> initialFens :: [Maybe FullOpeningData]
         initialFens = take 10 $ fmap Fen.gameStateToFen $ Pgn.gameStates game
 
 

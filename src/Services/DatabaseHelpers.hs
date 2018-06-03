@@ -22,7 +22,7 @@ module Services.DatabaseHelpers where
 
 import Database.Persist (insertBy, insert, Key)
 import Database.Persist.Postgresql (transactionSave)
-import Database.Persist.Sql (Entity, entityKey, entityVal)
+import Database.Persist.Sql (Entity, entityKey)
 import Data.Time (Day, fromGregorian)
 import qualified Data.Text as Te (pack, Text)
 import Data.Maybe (isJust, fromJust, listToMaybe)
@@ -39,7 +39,7 @@ import qualified Chess.Helpers as Helpers
 
 import Test.Helpers as Helpers
 import Services.Types
-import Services.Openings (OpeningMap(..), opVariation, getOpening, getOpeningData)
+import Services.Openings (OpeningMap, opVariation, getOpening, getOpeningData)
 
 
 connString :: String -> String

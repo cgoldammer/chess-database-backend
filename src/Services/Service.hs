@@ -207,9 +207,7 @@ evalData mrData = do
   return (players, evals)
 
 getEvalResults :: MoveRequestData -> Handler b Service [Helpers.EvalResult]
-getEvalResults mrData = do
-  (_, evals) <- evalData mrData
-  return evals
+getEvalResults = fmap snd . evalData
 
 getMoveSummary :: MoveRequestData -> Handler b Service [Helpers.MoveSummary]
 getMoveSummary mrData = do

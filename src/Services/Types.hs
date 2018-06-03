@@ -16,7 +16,6 @@ module Services.Types where
 import Data.Time (Day, UTCTime)
 import Database.Persist.TH (persistLowerCase, share, mkPersist, sqlSettings, mkMigrate)
 import Data.Aeson (toJSON)
-import Data.Map (Map)
 
 share [mkPersist sqlSettings, mkMigrate "migrateAll"] [persistLowerCase|
 Database json

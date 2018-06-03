@@ -15,7 +15,7 @@ module Test.Fixtures where
 
 import Database.Persist (Key, insertBy)
 import Database.Persist.Sql 
-import qualified Data.Text as Te (Text, pack)
+import Data.Text as Te (Text, pack)
 import Data.Either (rights)
 import Control.Monad.Trans.Reader (ReaderT)
 import Control.Monad.Reader (MonadReader, MonadIO, runReaderT, reader, liftIO)
@@ -23,7 +23,7 @@ import Data.Either.Combinators (rightToMaybe)
 import Debug.Trace (trace)
 import Text.RawString.QQ (r)
 import qualified Filesystem.Path.CurrentOS as FS (fromText)
-import qualified Turtle as Tu (strict, input, Text)
+import qualified Turtle as Tu (strict, input)
 import System.Directory (listDirectory)
 
 import AppTypes
@@ -91,6 +91,7 @@ getFolderPgns folder = do
   let files = filter ((==".pgn") . extension) $ allFiles
   return [folder ++ "/" ++ name | name <- files]
 
+fileSetsProd :: [(String, String)]
 fileSetsProd = [
   ("World Championships 1886-2014", "prod/world_champion"), 
   ("Candidates 2011-2018", "prod/candidates"), 
@@ -114,16 +115,17 @@ storeGamesIntoDB = do
   files <- liftIO (getFiles (getAppType dbName))
   mapM_ storeFilesIntoDB files
 
-storeFile dbName databaseName fileName = do
+storeFile :: MonadIO m => String -> String -> [Char] -> m ()
+storeFile dbName chessDBName fileName = do
   let fullName = "./data/games/" ++ fileName
   fileText <- Tu.strict $ Tu.input $ FS.fromText $ Te.pack fullName
-  DatabaseHelpers.readTextIntoDB dbName databaseName fileText True
+  DatabaseHelpers.readTextIntoDB dbName chessDBName fileText True
   return ()
 
 storeFilesIntoDB :: (MonadReader FixtureSettings m, MonadIO m) => (String, [String]) -> m ()
-storeFilesIntoDB (databaseName, fileNames) = do
+storeFilesIntoDB (chessDBName, fileNames) = do
   dbName <- reader settingsDBName
-  liftIO $ inBackend (connString dbName) $ mapM_ (storeFile dbName databaseName) fileNames
+  liftIO $ inBackend (connString dbName) $ mapM_ (storeFile dbName chessDBName) fileNames
   return ()
 
 evaluateGames :: (MonadReader FixtureSettings m, MonadIO m) => m ()
@@ -167,7 +169,7 @@ doAndStoreEvaluationIO dbName dbGame = do
 -- a certain month, the `player_rating` table will not contain any data for this month.
 -- If you are using this data to report player ratings graphs, you might
 -- want to fill in this missing time period with the latest preceding rating.
-ratingQuery :: Tu.Text
+ratingQuery :: Text
 ratingQuery = [r|
 SELECT player_id, extract(year from date) as year, extract(month from date) as month, avg(rating)::Int
 FROM (
@@ -197,13 +199,13 @@ addRatings = do
   return ()
  
 
-sqlGamesAll :: Tu.Text
+sqlGamesAll :: Text
 sqlGamesAll = [r|
 SELECT ??
 FROM game
 |]
 
-sqlGamesUnevaluated :: Tu.Text
+sqlGamesUnevaluated :: Text
 sqlGamesUnevaluated = [r|
 SELECT ?? 
 FROM game
