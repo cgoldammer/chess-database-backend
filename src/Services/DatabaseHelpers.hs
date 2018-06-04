@@ -1,21 +1,13 @@
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE QuasiQuotes #-}
-{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE EmptyDataDecls #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE DataKinds         #-}
-{-# LANGUAGE DeriveGeneric     #-}
 {-# LANGUAGE DeriveAnyClass     #-}
 {-# LANGUAGE PolyKinds         #-}
-{-# LANGUAGE TypeFamilies      #-}
 {-# LANGUAGE TypeOperators     #-}
 
 module Services.DatabaseHelpers where
@@ -53,9 +45,9 @@ keyReader = either entityKey id
 storeGameIntoDB :: Key Database -> OpeningMap -> Pgn.PgnGame -> DataAction (Maybe (Key Game))
 storeGameIntoDB dbResult openings g = do
   let game = Pgn.parsedPgnGame g
-  let opening = fmap (entityKey . opVariation) $ getOpening openings game
+  let opening = entityKey . opVariation <$> getOpening openings game
   let pgn = Pgn.gamePgnFull game
-  let tags = (Pgn.pgnGameTags g) :: [Pgn.PgnTag]
+  let tags = Pgn.pgnGameTags g :: [Pgn.PgnTag]
   let requiredTags = trace (show tags) $ parseRequiredTags tags
   if isJust requiredTags 
     then do
@@ -65,10 +57,10 @@ storeGameIntoDB dbResult openings g = do
       let resultInt = resultDBFormat $ requiredResult parsedTags
       let date = getDate tags -- Maybe Day
       -- Storing the game
-      let gm = (Game dbResult playerWhite playerBlack resultInt tournament pgn date opening)
-      gameResult <- fmap keyReader $ insertBy gm
+      let gm = Game dbResult playerWhite playerBlack resultInt tournament pgn date opening
+      gameResult <- keyReader <$> insertBy gm
       -- Storing the tags
-      let formattedTags = fmap formatForDB $ filter (not . isPlayer) tags
+      let formattedTags = formatForDB <$> filter (not . isPlayer) tags
       mapM_ (\(name, val) -> insert (GameAttribute gameResult name val)) formattedTags
       return $ Just gameResult
     else do
@@ -151,9 +143,7 @@ dateStringParse = do
   return $ fromGregorian (read year :: Integer) (read month :: Int) (read day :: Int)
 
 readTextIntoDB :: MonadIO m => String -> String -> Te.Text -> Bool -> m (Key Database, [Maybe (Key Game)])
-readTextIntoDB dbName chessDBName text isPublic = do
-  res <- liftIO $ inBackend (connString dbName) $ readTextWithPersist chessDBName text isPublic
-  return res
+readTextIntoDB dbName chessDBName text isPublic = liftIO $ inBackend (connString dbName) $ readTextWithPersist chessDBName text isPublic
 
 readTextWithPersist :: String -> Tu.Text -> Bool -> DataAction (Key Database, [Maybe (Key Game)])
 readTextWithPersist chessDBName text isPublic = do
@@ -168,6 +158,6 @@ readTextWithPersist chessDBName text isPublic = do
 
 listToInClause :: [Int] -> String
 listToInClause ints = clause
-  where intStrings = (fmap show ints) :: [String]
-        clause = "(" ++ (intercalate ", " intStrings) ++ ")"
+  where intStrings = fmap show ints :: [String]
+        clause = '(' : intercalate ", " intStrings ++ ")"
 

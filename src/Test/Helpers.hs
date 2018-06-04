@@ -1,13 +1,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE EmptyDataDecls             #-}
 {-# LANGUAGE FlexibleContexts           #-}
 {-# LANGUAGE GADTs                      #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE MultiParamTypeClasses      #-}
-{-# LANGUAGE OverloadedStrings          #-}
-{-# LANGUAGE QuasiQuotes                #-}
-{-# LANGUAGE TemplateHaskell            #-}
 {-# LANGUAGE TypeFamilies               #-}
 
 module Test.Helpers (
@@ -35,7 +30,7 @@ import Services.Types
 type DataAction a = ReaderT SqlBackend (NoLoggingT (ResourceT IO)) a
 
 inBackend :: String -> DataAction a -> IO a
-inBackend conn action = runStderrLoggingT $ withPostgresqlPool (B.pack conn) 1 $ \pool -> liftIO $ do
+inBackend conn action = runStderrLoggingT $ withPostgresqlPool (B.pack conn) 1 $ \pool -> liftIO $ 
   flip runSqlPersistMPool pool $ do
     runMigration migrateAll
     runMigrationSilent migrateAll

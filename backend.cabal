@@ -191,10 +191,3 @@ test-suite backend-test
   else
     ghc-options: -threaded -Wall -fwarn-tabs -funbox-strict-fields -O2
 
-Executable temp
-  hs-source-dirs: test
-  main-is: Temp.hs
-  default-language: Haskell2010
-  build-depends:
-      base
-

@@ -64,8 +64,7 @@ loginRoutes = [
     ]
 
 nothingHandler :: Handler App (AuthManager App) ()
-nothingHandler = do
-  return ()
+nothingHandler = return ()
 
 handleLoginSubmit :: Handler App (AuthManager App) ()
 handleLoginSubmit = do
@@ -98,8 +97,7 @@ handleNewUser = do
                 let usId = userLogin authUser
                 withTop service $ S.createAppUser usId
                 return ()
-        Left _ -> do
-                return ()
+        Left _ -> return ()
 
     handleLoginSubmit
     return ()

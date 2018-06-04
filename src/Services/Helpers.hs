@@ -1,17 +1,10 @@
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE QuasiQuotes #-}
-{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE EmptyDataDecls #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE TypeOperators #-}
-{-# LANGUAGE DataKinds         #-}
 {-# LANGUAGE DeriveGeneric     #-}
 {-# LANGUAGE DeriveAnyClass     #-}
 {-# LANGUAGE PolyKinds         #-}
@@ -28,7 +21,7 @@ import Database.Persist.Postgresql (Key, entityKey, entityVal, Entity)
 import Data.Char (toLower)
 import Data.List (sortOn, groupBy)
 import Control.Monad (join)
-import Data.Maybe (fromJust)
+import Data.Maybe (fromJust, fromMaybe)
 import Control.Lens ((^.), _1, _2, _3, to)
 import qualified Data.List.Safe as Safe (head)
 
@@ -50,7 +43,7 @@ padEvals :: Int -> GameResult -> [(MoveNumber, EvalInt)] -> [(MoveNumber, EvalIn
 padEvals desiredLength result vals
   | length vals >= desiredLength = vals
   | otherwise = vals ++ zipped
-      where zipped = zip [((length vals) + 1)..desiredLength] (repeat (resultValue result))
+      where zipped = zip [(length vals + 1)..desiredLength] (repeat (resultValue result))
 
 invertGameResult :: GameResult -> GameResult
 invertGameResult Win = Lose
@@ -74,7 +67,7 @@ moveAverage playerMap playerKey me = MoveSummary key playerName average
 averageByPlayer :: [DataForMoveAverage] -> MoveAverageData
 averageByPlayer dataForAverage = fmap calculateStats evals
   where mapByGame = groupWithVal (moveEvalGameId . (^. _3)) dataForAverage -- Map (Key Game) [DataForMoveAverage]
-        maxLength = maximum $ fmap length $ elems mapByGame
+        maxLength = maximum $ length <$> elems mapByGame
         mapWithMove = fmap (aggregateEval maxLength) mapByGame -- Map (Key Game) [(Int, Int)]
         evals = (fmap . fmap) snd $ groupWithVal fst $ concat mapWithMove -- Map Int [Int]
         calculateStats x = (intAverage x, (stdError . fmap fromIntegral) x)
@@ -82,12 +75,12 @@ averageByPlayer dataForAverage = fmap calculateStats evals
 aggregateEval :: Int -> [DataForMoveAverage] -> [(Int, Int)]
 aggregateEval maxLength dataForAverage = padEvals maxLength result $ zip moves evals
   where vals = fmap (\(_, isW, me) -> (isW, me)) dataForAverage -- [(IsWhite, MoveEval)]
-        result = (head dataForAverage) ^. _1
+        result = head dataForAverage ^. _1
         evals = fmap (uncurry evalAsIntWithColor) vals
         moves = fmap (^.(_2 . to moveEvalMoveNumber)) vals
 
 entityToMap :: Ord (Key a) => [Entity a] -> Map (Key a) a
-entityToMap ls = fromList $ [(entityKey x, entityVal x) | x <- ls]
+entityToMap ls = fromList [(entityKey x, entityVal x) | x <- ls]
 
 maxEval :: Int
 maxEval = 400
@@ -118,9 +111,9 @@ errorEval = 0
 
 evalAsInt :: MoveEval -> Int
 evalAsInt me = max (- maxEval) (min maxEval eval)
-  where eval = maybe errorEval id  singleNumber
+  where eval = fromMaybe errorEval singleNumber
         mateMultiplier = 100
-        singleNumber = join $ Safe.head $ [moveEvalEval me, fmap (*mateMultiplier) (moveEvalMate me)]
+        singleNumber = join $ Safe.head [moveEvalEval me, fmap (*mateMultiplier) (moveEvalMate me)]
 
 groupWithVal :: (Ord b) => (a -> b) -> [a] -> Map b [a]
 groupWithVal f x = fromList [(fst (head el), fmap snd el) | el <- grouped]
@@ -130,7 +123,7 @@ groupWithVal f x = fromList [(fst (head el), fmap snd el) | el <- grouped]
 
 addColor :: Key Player -> [EvalResult] -> [(GameResult, IsWhite, EvalResult)]
 addColor player evalResults = [(ownGameResult g, isWhite g, evalResult) | evalResult@(_, g) <- evalResults]
-  where isWhite g = if (gamePlayerWhiteId (entityVal g)) == player then True else False
+  where isWhite g = gamePlayerWhiteId (entityVal g) == player
         results g = readGameResult $ gameGameResult $ entityVal g
         gameResult g = fromJust $ results g
         ownGameResult g = getOwnGameResult (gameResult g) (isWhite g)
@@ -139,7 +132,7 @@ playerBlack :: Entity MoveEval -> Entity Game -> Key Player
 playerBlack _ gm = gamePlayerBlackId $ entityVal gm
 
 playerNotToMove :: Entity MoveEval -> Entity Game -> Key Player
-playerNotToMove me gm = if (moveEvalIsWhite m) then (gamePlayerBlackId g) else (gamePlayerWhiteId g)
+playerNotToMove me gm = if moveEvalIsWhite m then gamePlayerBlackId g else gamePlayerWhiteId g
   where m = entityVal me
         g = entityVal gm
 
@@ -160,7 +153,7 @@ instance ToJSON MoveSummary where
   toJSON = genericToJSON defaultOptions { fieldLabelModifier = cleanSummName } 
 
 cleanSummName :: String -> String
-cleanSummName s = [toLower c] ++ rest
+cleanSummName s = toLower c : rest
   where (c: rest) = drop (length ("moveSummary" :: String)) s
 
 type AvgMoveEval = Int
@@ -174,7 +167,7 @@ instance ToJSON MoveAverage where
 
 
 summarizeEvals :: [Entity Player] -> [EvalResult] -> [MoveSummary]
-summarizeEvals players evals = fmap (handleMoveAverage playerMap) $ assocs byPlayer
+summarizeEvals players evals = handleMoveAverage playerMap <$> assocs byPlayer
   where byPlayer = movesByPlayer evals 
         playerMap = entityToMap players
 

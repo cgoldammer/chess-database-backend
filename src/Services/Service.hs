@@ -4,14 +4,11 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE EmptyDataDecls #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE TypeOperators #-}
-{-# LANGUAGE DataKinds         #-}
 {-# LANGUAGE DeriveGeneric     #-}
 {-# LANGUAGE DeriveAnyClass     #-}
 {-# LANGUAGE PolyKinds         #-}
@@ -25,11 +22,10 @@ import Control.Lens (makeLenses)
 import Control.Monad.State.Class (get, gets)
 import qualified Control.Monad.State.Lazy as St (State, get)
 import Data.Aeson (FromJSON, ToJSON)
-import Snap.Core (writeBS)
 import Snap.Snaplet (Snaplet, MonadSnaplet, SnapletInit, Handler, with, getSnapletUserConfig, makeSnaplet, nestSnaplet, addRoutes)
 import Snap.Snaplet.PostgresqlSimple (Postgres, HasPostgres, getPostgresState, setLocalPostgresState, pgsInit)
 import qualified Data.ByteString.Char8 as B (pack, ByteString)
-import Data.List (groupBy)
+import Data.List (groupBy, lookup)
 import qualified Data.Text as T (Text, pack, unpack)
 import qualified Data.Text.Lazy as TL (toStrict)
 import Data.Text.Template (Context, substitute)
@@ -40,14 +36,12 @@ import Database.Persist.Sql (rawSql)
 
 import Control.Monad.IO.Class (liftIO, MonadIO)
 import Snap.Snaplet.Persistent (PersistState, HasPersistPool, getPersistPool, initPersistGeneric, runPersist)
-import Data.Maybe (isJust)
+import Data.Maybe (listToMaybe, isJust, fromMaybe)
 import Servant.API hiding (GET)
 import Servant (serveSnap, Server)
-import Data.Maybe (listToMaybe)
 import Data.Proxy (Proxy(..))
 import Data.Time.Clock (getCurrentTime)
 import Data.Map (toList)
-import Data.List (lookup)
 import Text.RawString.QQ (r)
 import Data.IORef (IORef, readIORef, writeIORef, newIORef)
 
@@ -64,8 +58,7 @@ import qualified Test.Helpers as TH
 type UserState = St.State (Maybe String) (Maybe String)
 
 user :: St.State (Maybe String) (Maybe String)
-user = do n <- St.get
-          return n
+user = St.get
 
 data Service = Service {
     _servicePG :: Snaplet Postgres
@@ -87,7 +80,7 @@ mkSnapletPgPoolWithDB dbName = do
     conf <- getSnapletUserConfig
     maybeSize <- liftIO $ DC.lookup conf "postgre-pool-size"
     let conStr = B.pack $ "host='localhost' dbname='chess_" ++ dbName ++ "' user='postgres'"
-    let size = maybe 1 id maybeSize
+    let size = fromMaybe 1 maybeSize
     liftIO . runNoLoggingT $ PG.createPostgresqlPool conStr size
 
 initPersistWithDB :: String -> SqlPersistT (NoLoggingT IO) a -> SnapletInit b PersistState
@@ -97,7 +90,7 @@ currentUserName :: Handler b Service (Maybe String)
 currentUserName = gets _serviceCurrentUser >>= (liftIO . readIORef)
 
 changeUser :: Maybe String -> Handler b Service ()
-changeUser value = gets _serviceCurrentUser >>= liftIO . ((flip writeIORef) value)
+changeUser value = gets _serviceCurrentUser >>= liftIO . flip writeIORef value
 
 data ImpMove = ImpMove { 
   impMove :: String
@@ -112,38 +105,35 @@ data ImpMove = ImpMove {
 getPlayers :: DefaultSearchData -> Handler b Service [Entity Player]
 getPlayers searchData = runPersist $ do
   let db = val $ intToKeyDB $ searchDB searchData
-  players <- select $ distinct $
+  select $ distinct $
     from $ \(p, g) -> do
       where_ $ ((g^.GamePlayerWhiteId ==. p^.PlayerId) ||. (g^.GamePlayerBlackId ==. p^.PlayerId)) &&. (g^.GameDatabaseId ==. db)
       return p
-  return players
 
 getDatabases :: Handler b Service [Entity Database]
 getDatabases = do
   currentUser :: Maybe String <- currentUserName
   liftIO $ print $ "Current user" ++ show currentUser
-  dbs <- runPersist $ do
+  runPersist $ do
     dbsPublic <- select $ from $ \db -> do
       where_ (db^.DatabaseIsPublic)
       return db
-    let searchUser = maybe "NOUSER" id currentUser
-    let searchCondition dbp = (dbp^.DatabasePermissionUserId ==. (val searchUser)) &&. (dbp^.DatabasePermissionRead ==. (val True))
+    let searchUser = fromMaybe "" currentUser
+    let searchCondition dbp = (dbp^.DatabasePermissionUserId ==. val searchUser) &&. (dbp^.DatabasePermissionRead ==. val True)
     let mergeCondition db dbp = dbp^.DatabasePermissionDatabaseId ==. db^.DatabaseId
     dbsPersonal <- select $ distinct $ 
       from $ \(db, dbp) -> do
-        where_ $ (mergeCondition db dbp) &&. (searchCondition dbp)
+        where_ $ mergeCondition db dbp &&. searchCondition dbp
         return db
     return $ dbsPublic ++ dbsPersonal
-  return dbs
   
 getTournaments :: DefaultSearchData -> Handler b Service [Entity Tournament]
 getTournaments searchData = runPersist $ do
   let db = val $ intToKeyDB $ searchDB searchData
-  tournaments <- select $ distinct $ 
+  select $ distinct $ 
     from $ \(t, g) -> do
       where_ $ (g^.GameDatabaseId ==. db) &&. (t^.TournamentId ==. g^.GameTournament)
       return t
-  return tournaments
 
 intToKey :: Int -> Key Tournament
 intToKey = toSqlKey . fromIntegral
@@ -192,7 +182,7 @@ type QueryType = (Single Int, Single Int, Single Int, Single Int)
 getDataSummary :: DefaultSearchData -> Handler b Service DataSummary
 getDataSummary searchData = do
   let db = searchDB searchData
-  let arguments = take 4 $ repeat $ PersistInt64 (fromIntegral db)
+  let arguments = replicate 4 $ PersistInt64 (fromIntegral db)
   results :: [QueryType] <- runPersist $ rawSql dataSummaryQuery arguments
   let (Single numTournaments, Single numGames, Single numGameEvals, Single numMoveEvals) = head results
   return $ DataSummary numTournaments numGames numGameEvals numMoveEvals
@@ -212,31 +202,26 @@ getEvalResults = fmap snd . evalData
 getMoveSummary :: MoveRequestData -> Handler b Service [Helpers.MoveSummary]
 getMoveSummary mrData = do
   (playerKeys, evals) <- evalData mrData
-  let summ = Helpers.summarizeEvals playerKeys $ evals
-  return summ
+  return $ Helpers.summarizeEvals playerKeys evals
 
 selectEvalResults :: MonadIO m => Key Database -> [Key Tournament] -> SqlPersistT m [Helpers.EvalResult]
 selectEvalResults db tournaments = do
   let tournamentMatch t = t ^. TournamentId `in_` valList tournaments
-  let tournamentCondition t = if (length tournaments > 0) then (tournamentMatch t) else (val True)
-  results <- select $ 
+  let tournamentCondition t = if not (null tournaments) then tournamentMatch t else val True
+  select $ 
     from $ \(me, g, t) -> do
-    where_ $ (me ^. MoveEvalGameId ==. g ^. GameId) &&. (g ^. GameTournament ==. t ^. TournamentId) &&. (tournamentCondition t) &&. (g^.GameDatabaseId ==. val db)
+    where_ $ (me ^. MoveEvalGameId ==. g ^. GameId) &&. (g ^. GameTournament ==. t ^. TournamentId) &&. tournamentCondition t &&. (g^.GameDatabaseId ==. val db)
     return (me, g)
-  return results
 
 
 getMoveEvals :: Key Database -> [Key Tournament] -> Handler b Service [Helpers.EvalResult]
-getMoveEvals db tournaments = runPersist $ do
-  res <- selectEvalResults db tournaments
-  return res
-
+getMoveEvals db tournaments = runPersist $ selectEvalResults db tournaments
 
 printName :: GameAttributeId -> String
 printName = show
 
 gameRead :: Int -> String
-gameRead ga = show ga
+gameRead = show
 
 type ImpQueryResult = (Single String, Single String, Single String, Single String, Single String, Single String, Single String)
 constructMove :: ImpQueryResult -> (String, ImpMove)
@@ -319,7 +304,7 @@ substituteGameList template ints = TL.toStrict $ substitute template cont
 
 -- | Create 'Context' from association list.
 context :: [(String, String)] -> Context
-context assocs x = T.pack $ maybe err id . lookup (T.unpack x) $ assocs
+context assocs x = T.pack $ fromMaybe err . lookup (T.unpack x) $ assocs
   where err = error $ "Could not find key: " ++ T.unpack x
 
 gameEvaluations :: GameList -> Handler b Service PlayerGameEvaluations
@@ -327,7 +312,7 @@ gameEvaluations gl = do
   runPersist $ rawExecute viewQuery []
   results <- runPersist $ rawSql (substituteGameList evalQueryTemplate gl) []
   let parsed = fmap parseEvalResults results
-  let grouped = (fmap . fmap) (\(_, b, c) -> (b, c)) $ Helpers.groupWithVal (\(a, _, _) -> a) parsed
+  let grouped = fmap (\(_, b, c) -> (b, c)) <$> Helpers.groupWithVal (\(a, _, _) -> a) parsed
   return $ toList grouped
 
 
@@ -361,8 +346,8 @@ gamesInDB dbName dbKey overwrite = TH.inBackend (connString dbName) $ do
     from $ \g  -> do
       where_ (g^.GameDatabaseId ==. db)
       return g
-  let evaluatedIds = (fmap entityKey evaluatedGames) :: [Key Game]
-  let difference = [g | g <- allGames, not (entityKey g `elem` evaluatedIds)]
+  let evaluatedIds = fmap entityKey evaluatedGames :: [Key Game]
+  let difference = [g | g <- allGames, entityKey g `notElem` evaluatedIds]
   return $ if overwrite then allGames else difference
 
 
@@ -370,8 +355,7 @@ getDBName :: Handler b Service String
 getDBName = do
   conf <- getSnapletUserConfig
   dbNameMaybe :: Maybe String <- liftIO $ DC.lookup conf "dbName"
-  let dbName = maybe "dev" id dbNameMaybe
-  return dbName
+  return $ fromMaybe "dev" dbNameMaybe
 
 
 uploadDB :: UploadData -> Handler b Service UploadResult
@@ -384,9 +368,7 @@ uploadDB upload = do
   return $ UploadResult $ Just $ length results
 
 addDBPermission :: Key Database -> Maybe String -> Handler b Service (Key DatabasePermission)
-addDBPermission dbResult userName = do
-  permission <- runPersist $ insert $ DatabasePermission dbResult (maybe "" id userName) True True False
-  return permission
+addDBPermission dbResult userName = runPersist $ insert $ DatabasePermission dbResult (fromMaybe "" userName) True True False
 
 data GameRequestData = GameRequestData {
     gameRequestDB :: Int
@@ -417,9 +399,10 @@ getMoveEvaluationData (MoveEvaluationRequest gl) = do
   let gameIds = fmap intToKeyGame gl
   results :: [(Entity Game, Entity MoveEval)] <- select $  
     from $ \(g, me) -> do
-      where_ $ (me ^. MoveEvalGameId ==. g ^. GameId) &&. ((g ^. GameId) `in_` (valList gameIds))
+      where_ $ (me ^. MoveEvalGameId ==. g ^. GameId) &&. ((g ^. GameId) `in_` valList gameIds)
       return (g, me)
-  let cleaned = filter (highMoveLoss . moveEvalsMoveLoss) $ getEvalData results
+  let filters = filter notAlreadyWinning . filter notAlreadyLosing . filter (highMoveLoss . moveEvalsMoveLoss)
+  let cleaned = filters $ getEvalData results
   return cleaned
 
 moveLossCutoff :: Int
@@ -428,6 +411,23 @@ moveLossCutoff = 200
 highMoveLoss :: MoveLoss -> Bool
 highMoveLoss (MoveLossMate _)= True
 highMoveLoss (MoveLossCP x) = x >= moveLossCutoff
+
+evalCutoff :: Int
+evalCutoff = 300
+
+notAlreadyWinning :: MoveEvaluationData -> Bool
+notAlreadyWinning dat = evalWithColor <= evalCutoff
+  where evalAfter = moveEvalsMoveEvalNext dat
+        wasWhite = not $ moveEvalIsWhite evalAfter
+        evalNum = fromMaybe 0 $ moveEvalEval evalAfter
+        evalWithColor = if wasWhite then evalNum else (- evalNum)
+
+notAlreadyLosing :: MoveEvaluationData -> Bool
+notAlreadyLosing dat = evalWithColor <= evalCutoff
+  where evalBest = moveEvalsMoveEval dat
+        wasWhite = moveEvalIsWhite evalBest
+        evalNum = fromMaybe 0 $ moveEvalEval evalBest
+        evalWithColor = if wasWhite then (- evalNum) else evalNum
 
 moveEvaluationHandler :: MoveEvaluationRequest -> Handler b Service [MoveEvaluationData]
 moveEvaluationHandler mer = runPersist $ getMoveEvaluationData mer
@@ -455,7 +455,7 @@ evalHelper ga (meE, meLaggedE) = MoveEvaluationData ga me meLagged (getMoveLoss 
 withLag :: [a] -> [(a, a)]
 withLag [] = []
 withLag [_] = []
-withLag (x1:x2:rest) = (x1, x2) : (withLag (x2 : rest))
+withLag (x1:x2:rest) = (x1, x2) : withLag (x2 : rest)
 
 
 
@@ -486,7 +486,7 @@ getMoveLoss meBefore meAfter = getMoveLossHelper evalBefore evalAfter mateBefore
         mateAfter = moveEvalMate meAfter
 
 getMoveLossHelper :: Maybe Int -> Maybe Int -> Maybe Int -> Maybe Int -> MoveLoss
-getMoveLossHelper (Just before) (Just after) _ _ = MoveLossCP $ (max (after - before) 0)
+getMoveLossHelper (Just before) (Just after) _ _ = MoveLossCP $ max (after - before) 0
 getMoveLossHelper _ _ (Just _) (Just _) = MoveLossCP 0
 getMoveLossHelper _ (Just _) (Just before) _ = MoveLossMate before
 getMoveLossHelper _ _ _ _= MoveLossCP 0
@@ -558,25 +558,23 @@ getGames requestData = do
   usr <- currentUserName
   let dbKey = intToKeyDB $ gameRequestDB requestData
   db :: Maybe Database <- runPersist $ PsP.get dbKey
-  dbp :: Maybe (Entity DatabasePermission) <- runPersist $ PsP.getBy $ UniqueDatabasePermission dbKey (maybe "" id usr)
+  dbp :: Maybe (Entity DatabasePermission) <- runPersist $ PsP.getBy $ UniqueDatabasePermission dbKey (fromMaybe "" usr)
   let dbPublic = fmap databaseIsPublic db == Just True
   let userLoggedIn = isJust usr
-  let userCanRead = (isJust dbp) && (fmap (databasePermissionRead . PsP.entityVal) dbp == Just True)
-  results <- if (dbPublic || (userLoggedIn && userCanRead)) then do
-      results <- fmap gameGrouper $ runPersist $ getGames' requestData
-      return results
+  let userCanRead = isJust dbp && (fmap (databasePermissionRead . PsP.entityVal) dbp == Just True)
+  if dbPublic || (userLoggedIn && userCanRead)
+    then fmap gameGrouper $ runPersist $ getGames' requestData
     else return []
-  return results
 
 groupSplitter :: [GameData] -> GameDataFormatted
 groupSplitter ((g, t, pWhite, pBlack, ga) : rest) = GameDataFormatted g t pWhite pBlack allAttributes
-  where allAttributes = ga : (fmap (\(_, _, _, _, gat) -> gat) rest)
+  where allAttributes = ga : fmap (\(_, _, _, _, gat) -> gat) rest
 
 gameDataEqual :: GameData -> GameData -> Bool
 gameDataEqual (g, _, _, _, _) (g', _, _, _, _) = entityKey g == entityKey g'
 
 gameGrouper :: [GameData] -> [GameDataFormatted]
-gameGrouper allGames = fmap groupSplitter $ Data.List.groupBy gameDataEqual allGames
+gameGrouper allGames = groupSplitter <$> Data.List.groupBy gameDataEqual allGames
 
 getGames' :: MonadIO m => GameRequestData -> SqlPersistT m [GameData]
 getGames' requestData = do
@@ -584,17 +582,16 @@ getGames' requestData = do
   let tournaments = gameRequestTournaments requestData
   let tournamentKeys = fmap intToKey tournaments
   let tournamentMatch t = t ^. TournamentId `in_` valList tournamentKeys
-  results <- select $ 
+  select $ 
     from $ \(g, t, pWhite, pBlack, ga) -> do
       where_ $ 
             (g ^. GameTournament ==. t ^. TournamentId) 
         &&. (g ^. GameDatabaseId ==. val db)
-        &&. (if length tournaments > 0 then (tournamentMatch t) else (not_ (tournamentMatch t)))
+        &&. (if not (null tournaments) then tournamentMatch t else not_ (tournamentMatch t))
         &&. (pWhite ^. PlayerId ==. g ^. GamePlayerWhiteId) 
         &&. (pBlack ^. PlayerId ==. g ^. GamePlayerBlackId) 
         &&. (ga ^. GameAttributeGameId ==. g ^. GameId)
       return (g, t, pWhite, pBlack, ga)
-  return results
 
 getResultPercentages :: DefaultSearchData -> Handler b Service [ResultPercentage]
 getResultPercentages searchData = do
@@ -603,24 +600,23 @@ getResultPercentages searchData = do
   return $ fmap toResultPercentage results
 
 usId :: Maybe T.Text -> Int
-usId x = maybe 0 (read . T.unpack) x
+usId = maybe 0 $ read . T.unpack
 
 serviceInit :: String -> SnapletInit b Service
 serviceInit dbName = makeSnaplet "chess" "Chess Service" Nothing $ do
   pg <- nestSnaplet "pg" servicePG pgsInit
   d <- nestSnaplet "db" serviceDB $ initPersistWithDB dbName (runMigrationUnsafe migrateAll)
   addRoutes chessRoutes
-  usr <- liftIO $ newIORef $ Nothing
+  usr <- liftIO $ newIORef Nothing
   return $ Service pg d usr
 
 chessRoutes :: [(B.ByteString, Handler b Service ())]
-chessRoutes = [("user2", writeBS "user test")] ++ [("", serveSnap chessApi apiServer)]
+chessRoutes = [("", serveSnap chessApi apiServer)]
 
 
 -- A useful handler for testing
 nothingHandler :: Handler b Service ()
-nothingHandler = do
-  return ()
+nothingHandler = return ()
 
 -- |Create a default app user. The id for the app user is the user name.
 createAppUser :: T.Text -> Handler b Service ()

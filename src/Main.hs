@@ -4,7 +4,6 @@ module Main where
 import Data.Maybe
 import Control.Comonad
 import qualified Data.ByteString.Char8 as B
-import Control.Monad.IO.Class (liftIO)
 import           Data.IORef
 import Snap.Snaplet.PostgresqlSimple
 import           Control.Monad.State
@@ -19,8 +18,6 @@ import Control.Monad.IO.Class (liftIO)
 
 import AppTypes
 import Application 
-
-
 
 readSettings :: IO Settings
 readSettings = do

@@ -12,11 +12,9 @@ import Database.Persist.Sql hiding ((==.))
 
 import Services.Types
 
-dummy = [(a, a+1) | a <- [0..10000]]
 
 main :: IO ()
 main = do
-  let grouped = groupWithVal id dummy
   (players, evals) <- TH.inBackend (connString dbName) dataResults
   let summ = summarizeEvals players evals
   print $ length summ

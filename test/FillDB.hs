@@ -4,7 +4,7 @@ import AppTypes
 import qualified Test.Fixtures as F
 
 dbTypeParser :: Parser String
-dbTypeParser = fmap dbNameReader $ switch (long "dev" <> short 't' <> help "Run test analysis")
+dbTypeParser = dbNameReader <$> switch (long "dev" <> short 't' <> help "Run test analysis")
 
 dbNameReader :: Bool -> String
 dbNameReader True = "dev"

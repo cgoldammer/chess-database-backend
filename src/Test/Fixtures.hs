@@ -1,13 +1,9 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE EmptyDataDecls             #-}
 {-# LANGUAGE FlexibleContexts           #-}
 {-# LANGUAGE GADTs                      #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE MultiParamTypeClasses      #-}
-{-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE QuasiQuotes                #-}
-{-# LANGUAGE TemplateHaskell            #-}
 {-# LANGUAGE TypeFamilies               #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
 
@@ -20,7 +16,6 @@ import Data.Either (rights)
 import Control.Monad.Trans.Reader (ReaderT)
 import Control.Monad.Reader (MonadReader, MonadIO, runReaderT, reader, liftIO)
 import Data.Either.Combinators (rightToMaybe)
-import Debug.Trace (trace)
 import Text.RawString.QQ (r)
 import qualified Filesystem.Path.CurrentOS as FS (fromText)
 import qualified Turtle as Tu (strict, input)
@@ -57,8 +52,7 @@ type OnlyContinue = Bool
 data SettingsInput = SettingsInput AppType OnlyContinue
 
 doNothing :: IO ()
-doNothing = do
-  return ()
+doNothing = return ()
 
 runJob :: FixtureSettings -> IO ()
 runJob settings = do
@@ -69,26 +63,24 @@ runJob settings = do
   return ()
 
 doNothing' :: ReaderT FixtureSettings IO ()
-doNothing' = do
-  return ()
+doNothing' = return ()
 
 readerActions :: ReaderT FixtureSettings IO ()
 readerActions = do
   continue <- reader settingsOnlyContinueEval
   evaluate <- reader settingsRunEval
   if continue 
-    then do
-      if evaluate then do evaluateGames else doNothing'
+    then if evaluate then evaluateGames else doNothing'
     else do
       storeGamesIntoDB
-      if evaluate then do evaluateGames else doNothing'
+      if evaluate then evaluateGames else doNothing'
   return ()
 
 getFolderPgns :: String -> IO [String]
 getFolderPgns folder = do
   allFiles :: [String] <- listDirectory $ "data/games/" ++ folder 
   let extension = reverse . take 4 . reverse
-  let files = filter ((==".pgn") . extension) $ allFiles
+  let files = filter ((==".pgn") . extension) allFiles
   return [folder ++ "/" ++ name | name <- files]
 
 fileSetsProd :: [(String, String)]
@@ -115,7 +107,7 @@ storeGamesIntoDB = do
   files <- liftIO (getFiles (getAppType dbName))
   mapM_ storeFilesIntoDB files
 
-storeFile :: MonadIO m => String -> String -> [Char] -> m ()
+storeFile :: MonadIO m => String -> String -> String -> m ()
 storeFile dbName chessDBName fileName = do
   let fullName = "./data/games/" ++ fileName
   fileText <- Tu.strict $ Tu.input $ FS.fromText $ Te.pack fullName
@@ -135,8 +127,8 @@ evaluateGames = do
   games <- liftIO $ inBackend (connString dbName) $ do
     dbGames :: [Entity Game] <- getGamesFromDB continueEval
     return dbGames
-  let games2 = reverse games
-  fmap concat $ mapM doEvaluation games2
+  let gamesReversed = reverse games
+  concat <$> mapM doEvaluation gamesReversed
   return ()
 
 
@@ -148,17 +140,15 @@ doEvaluation dbGame  = do
 
 doAndStoreEvaluationIO :: MonadIO m => String -> Entity Game -> m [Key MoveEval]
 doAndStoreEvaluationIO dbName dbGame = do
-  let maybeGame = trace "Storing evaluations for game" $ dbGameToPGN $ entityVal dbGame
-  keys <- case maybeGame of 
+  let maybeGame = dbGameToPGN $ entityVal dbGame
+  case maybeGame of 
     (Just game) -> do
       summaries <- liftIO $ Pgn.gameSummaries game
-      keys <- liftIO $ inBackend (connString dbName) $ do
+      liftIO $ inBackend (connString dbName) $ do
         k <- mapM insertBy $ evalToRow (entityKey dbGame) summaries
         return $ rights k
-      return keys
     Nothing ->
       return []
-  return keys
 
 -- | Adds structured player ratings to the database.
 -- These ratings are already stored in raw format as part of the 
@@ -219,12 +209,12 @@ getGamesFromDB continueEval = do
   return games
 
 evalToRow :: Key Game -> [Pgn.MoveSummary] -> [MoveEval]
-evalToRow g ms = evalToRowColor g 1 Board.White ms
+evalToRow g = evalToRowColor g 1 Board.White
 
 evalToRowColor :: Key Game -> Int -> Board.Color -> [Pgn.MoveSummary] -> [MoveEval]
 evalToRowColor _ _ _ [] = []
-evalToRowColor g n (Board.White) (ms : rest) = constructEvalMove g n True ms : evalToRowColor g n (Board.Black) rest
-evalToRowColor g n (Board.Black) (ms : rest) = constructEvalMove g n False ms : evalToRowColor g (n + 1) (Board.White) rest
+evalToRowColor g n Board.White (ms : rest) = constructEvalMove g n True ms : evalToRowColor g n Board.Black rest
+evalToRowColor g n Board.Black (ms : rest) = constructEvalMove g n False ms : evalToRowColor g (n + 1) Board.White rest
 
 constructEvalMove :: Key Game -> Int -> Bool -> Pgn.MoveSummary -> MoveEval
 constructEvalMove gm n isWhite (Pgn.MoveSummary mv mvBest evalMove _ _ fen) = MoveEval gm n isWhite (Just mv) mvBest eval mate fen

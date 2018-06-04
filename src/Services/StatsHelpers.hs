@@ -6,8 +6,8 @@ mean :: (Floating a) => [a] -> a
 mean xs = sum xs / (fromIntegral . length) xs
 
 var :: (Floating a) => [a] -> a
-var xs = (sum $ map (\x -> (x - m)^(2::Integer)) xs) / (fromIntegral (length xs)-1)
-    where m = mean xs
+var xs = sum (map (\x -> (x - m)^(2::Integer)) xs) / (fromIntegral (length xs)-1)
+  where m = mean xs
 
 stdDev :: (Floating a) => [a] -> a
 stdDev x = sqrt $ var x
