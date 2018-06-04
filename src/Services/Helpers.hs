@@ -37,7 +37,7 @@ import Services.Types
 
 type EntityMap a = Map (Key a) a
 type DataForMoveAverage = (GameResult, IsWhite, MoveEval)
-data GameResult = Win | Draw | Lose
+data GameResult = Win | Draw | Lose deriving (Eq, Show)
 type EvalResult = (Entity MoveEval, Entity Game)
 
 type MoveNumber = Int
@@ -111,9 +111,14 @@ evalAsIntWithColor False me = - (evalAsInt me)
 -- The first step is to multiply all mates by a huge number, this ensures
 -- that mates are always seen as better than non-mates. We then
 -- top-code and bottom-code the results.
+
+-- Todo: This should never happen, figure out why
+errorEval :: Int
+errorEval = 0
+
 evalAsInt :: MoveEval -> Int
 evalAsInt me = max (- maxEval) (min maxEval eval)
-  where eval = fromJust singleNumber
+  where eval = maybe errorEval id  singleNumber
         mateMultiplier = 100
         singleNumber = join $ Safe.head $ [moveEvalEval me, fmap (*mateMultiplier) (moveEvalMate me)]
 
@@ -126,7 +131,8 @@ groupWithVal f x = fromList [(fst (head el), fmap snd el) | el <- grouped]
 addColor :: Key Player -> [EvalResult] -> [(GameResult, IsWhite, EvalResult)]
 addColor player evalResults = [(ownGameResult g, isWhite g, evalResult) | evalResult@(_, g) <- evalResults]
   where isWhite g = if (gamePlayerWhiteId (entityVal g)) == player then True else False
-        gameResult g = fromJust $ readGameResult $ gameGameResult $ entityVal g
+        results g = readGameResult $ gameGameResult $ entityVal g
+        gameResult g = fromJust $ results g
         ownGameResult g = getOwnGameResult (gameResult g) (isWhite g)
         
 playerBlack :: Entity MoveEval -> Entity Game -> Key Player
@@ -138,7 +144,7 @@ playerNotToMove me gm = if (moveEvalIsWhite m) then (gamePlayerBlackId g) else (
         g = entityVal gm
 
 -- Only keep the evaluations that have the other person to move
--- That provides the evaluation of the moves the player made.
+-- That provides the evaluations of the moves the player made.
 movesByPlayer :: [EvalResult] -> Map (Key Player) [DataForMoveAverage]
 movesByPlayer res = (fmap . fmap) keepRelevant groupedWithColor
   where grouped = groupWithVal (uncurry playerNotToMove) res -- Map (Key Player) [EvalResult]

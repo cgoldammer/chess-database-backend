@@ -212,7 +212,8 @@ getEvalResults = fmap snd . evalData
 getMoveSummary :: MoveRequestData -> Handler b Service [Helpers.MoveSummary]
 getMoveSummary mrData = do
   (playerKeys, evals) <- evalData mrData
-  return $ Helpers.summarizeEvals playerKeys evals
+  let summ = Helpers.summarizeEvals playerKeys $ evals
+  return summ
 
 selectEvalResults :: MonadIO m => Key Database -> [Key Tournament] -> SqlPersistT m [Helpers.EvalResult]
 selectEvalResults db tournaments = do
@@ -226,7 +227,10 @@ selectEvalResults db tournaments = do
 
 
 getMoveEvals :: Key Database -> [Key Tournament] -> Handler b Service [Helpers.EvalResult]
-getMoveEvals db tournaments = runPersist (selectEvalResults db tournaments)
+getMoveEvals db tournaments = runPersist $ do
+  res <- selectEvalResults db tournaments
+  return res
+
 
 printName :: GameAttributeId -> String
 printName = show
@@ -419,12 +423,11 @@ getMoveEvaluationData (MoveEvaluationRequest gl) = do
   return cleaned
 
 moveLossCutoff :: Int
-moveLossCutoff = 150
+moveLossCutoff = 200
 
 highMoveLoss :: MoveLoss -> Bool
 highMoveLoss (MoveLossMate _)= True
 highMoveLoss (MoveLossCP x) = x >= moveLossCutoff
-
 
 moveEvaluationHandler :: MoveEvaluationRequest -> Handler b Service [MoveEvaluationData]
 moveEvaluationHandler mer = runPersist $ getMoveEvaluationData mer
