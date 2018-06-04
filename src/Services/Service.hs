@@ -18,17 +18,15 @@
 module Services.Service where
 
 import GHC.Generics (Generic)
-import Control.Lens (makeLenses)
+import Control.Lens (makeLenses, _1)
+import qualified Control.Lens as Lens ((^.))
 import Control.Monad.State.Class (get, gets)
-import qualified Control.Monad.State.Lazy as St (State, get)
 import Data.Aeson (FromJSON, ToJSON)
 import Snap.Snaplet (Snaplet, MonadSnaplet, SnapletInit, Handler, with, getSnapletUserConfig, makeSnaplet, nestSnaplet, addRoutes)
 import Snap.Snaplet.PostgresqlSimple (Postgres, HasPostgres, getPostgresState, setLocalPostgresState, pgsInit)
 import qualified Data.ByteString.Char8 as B (pack, ByteString)
-import Data.List (groupBy, lookup)
+import Data.List (groupBy)
 import qualified Data.Text as T (Text, pack, unpack)
-import qualified Data.Text.Lazy as TL (toStrict)
-import Data.Text.Template (Context, substitute)
 import Database.Persist (insert, insert_)
 import qualified Database.Persist.Postgresql as PsP (get, getBy, entityVal)
 import Database.Esqueleto hiding (get)
@@ -42,7 +40,6 @@ import Servant (serveSnap, Server)
 import Data.Proxy (Proxy(..))
 import Data.Time.Clock (getCurrentTime)
 import Data.Map (toList)
-import Text.RawString.QQ (r)
 import Data.IORef (IORef, readIORef, writeIORef, newIORef)
 
 import Control.Monad.Logger (runNoLoggingT, NoLoggingT)
@@ -51,14 +48,10 @@ import qualified Data.Configurator as DC (lookup)
 
 import Services.Types
 import qualified Services.Helpers as Helpers
-import Services.DatabaseHelpers (connString, readTextIntoDB, listToInClause)
+import Services.DatabaseHelpers (connString, readTextIntoDB)
 import qualified Test.Fixtures as TF
 import qualified Test.Helpers as TH
-
-type UserState = St.State (Maybe String) (Maybe String)
-
-user :: St.State (Maybe String) (Maybe String)
-user = St.get
+import Services.Sql
 
 data Service = Service {
     _servicePG :: Snaplet Postgres
@@ -66,12 +59,51 @@ data Service = Service {
   , _serviceCurrentUser :: IORef (Maybe String)}
 makeLenses ''Service
 
-instance HasPersistPool (Handler b Service) where
-  getPersistPool = with serviceDB getPersistPool
+-- |The module boils down to this api.
+type ChessApi m = 
+       "user"     :> Get '[JSON] (Maybe AppUser) 
+  :<|> "players" :> ReqBody '[JSON] DefaultSearchData :> Post '[JSON] [Entity Player]
+  :<|> "tournaments" :> ReqBody '[JSON] DefaultSearchData :> Post '[JSON] [Entity Tournament]
+  :<|> "databases" :> Get '[JSON] [Entity Database]
+  :<|> "evalResults" :> ReqBody '[JSON] MoveRequestData :> Post '[JSON] [Helpers.EvalResult]
+  :<|> "moveSummary" :> ReqBody '[JSON] MoveRequestData :> Post '[JSON] [Helpers.MoveSummary]
+  :<|> "dataSummary" :> ReqBody '[JSON] DefaultSearchData :> Post '[JSON] DataSummary
+  :<|> "resultPercentages" :> ReqBody '[JSON] DefaultSearchData :> Post '[JSON] [ResultPercentage]
+  :<|> "games" :> ReqBody '[JSON] GameRequestData :> Post '[JSON] [GameDataFormatted]
+  :<|> "uploadDB" :> ReqBody '[JSON] UploadData :> Post '[JSON] UploadResult
+  :<|> "addEvaluations" :> ReqBody '[JSON] EvaluationRequest :> Post '[JSON] EvaluationResult 
+  :<|> "gameEvaluations" :> ReqBody '[JSON] GameList :> Post '[JSON] PlayerGameEvaluations
+  :<|> "moveEvaluations" :> ReqBody '[JSON] MoveEvaluationRequest :> Post '[JSON] [MoveEvaluationData]
 
-instance HasPostgres (Handler b Service) where
-  getPostgresState = with servicePG get
-  setLocalPostgresState = undefined
+chessApi :: Proxy (ChessApi (Handler b Service))
+chessApi = Proxy
+
+apiServer :: Server (ChessApi (Handler b Service)) (Handler b Service)
+apiServer =
+       getMyUser 
+  :<|> getPlayers
+  :<|> getTournaments 
+  :<|> getDatabases 
+  :<|> getEvalResults 
+  :<|> getMoveSummary 
+  :<|> getDataSummary
+  :<|> getResultPercentages
+  :<|> getGames
+  :<|> uploadDB
+  :<|> addEvaluations
+  :<|> gameEvaluations
+  :<|> moveEvaluationHandler
+
+serviceInit :: String -> SnapletInit b Service
+serviceInit dbName = makeSnaplet "chess" "Chess Service" Nothing $ do
+  pg <- nestSnaplet "pg" servicePG pgsInit
+  d <- nestSnaplet "db" serviceDB $ initPersistWithDB dbName (runMigrationUnsafe migrateAll)
+  addRoutes chessRoutes
+  usr <- liftIO $ newIORef Nothing
+  return $ Service pg d usr
+
+chessRoutes :: [(B.ByteString, Handler b Service ())]
+chessRoutes = [("", serveSnap chessApi apiServer)]
 
 type LoginUser = Maybe Int
 
@@ -92,15 +124,41 @@ currentUserName = gets _serviceCurrentUser >>= (liftIO . readIORef)
 changeUser :: Maybe String -> Handler b Service ()
 changeUser value = gets _serviceCurrentUser >>= liftIO . flip writeIORef value
 
-data ImpMove = ImpMove { 
-  impMove :: String
-, impBest :: String
-, impWhite :: String
-, impBlack :: String
-, impMoveEval :: String
-, impBestEval :: String
-} deriving (Generic, FromJSON, ToJSON)
+instance HasPersistPool (Handler b Service) where
+  getPersistPool = with serviceDB getPersistPool
 
+instance HasPostgres (Handler b Service) where
+  getPostgresState = with servicePG get
+  setLocalPostgresState = undefined
+
+data DataSummary = DataSummary { 
+    numberTournaments :: Int
+  , numberGames :: Int
+  , numberGameEvals :: Int
+  , numberMoveEvals :: Int
+} deriving (Generic, Show, Eq, ToJSON, FromJSON)
+
+data DefaultSearchData = DefaultSearchData { searchDB :: Int } deriving (Generic, FromJSON, ToJSON, Show)
+type QueryType = (Single Int, Single Int, Single Int, Single Int)
+
+getDataSummary :: DefaultSearchData -> Handler b Service DataSummary
+getDataSummary searchData = do
+  let db = searchDB searchData
+  let arguments = replicate 4 $ PersistInt64 (fromIntegral db)
+  results :: [QueryType] <- runPersist $ rawSql dataSummaryQuery arguments
+  let (Single numTournaments, Single numGames, Single numGameEvals, Single numMoveEvals) = head results
+  return $ DataSummary numTournaments numGames numGameEvals numMoveEvals
+
+data ResultPercentage = ResultPercentage {
+    ownElo :: Int
+  , opponentElo :: Int
+  , winPercentage :: Int
+  , drawPercentage :: Int} deriving (Generic, FromJSON, ToJSON, Show)
+
+type ResultPercentageQueryResult = (Single Int, Single Int, Single Int, Single Int)
+
+toResultPercentage :: ResultPercentageQueryResult -> ResultPercentage
+toResultPercentage (Single ownRating, Single oppRating, Single winP, Single drawP) = ResultPercentage ownRating oppRating winP drawP
 
 getPlayers :: DefaultSearchData -> Handler b Service [Entity Player]
 getPlayers searchData = runPersist $ do
@@ -113,7 +171,6 @@ getPlayers searchData = runPersist $ do
 getDatabases :: Handler b Service [Entity Database]
 getDatabases = do
   currentUser :: Maybe String <- currentUserName
-  liftIO $ print $ "Current user" ++ show currentUser
   runPersist $ do
     dbsPublic <- select $ from $ \db -> do
       where_ (db^.DatabaseIsPublic)
@@ -144,49 +201,6 @@ intToKeyDB = toSqlKey . fromIntegral
 intToKeyGame :: Int -> Key Game
 intToKeyGame = toSqlKey . fromIntegral
 
-
-data DataSummary = DataSummary { 
-    numberTournaments :: Int
-  , numberGames :: Int
-  , numberGameEvals :: Int
-  , numberMoveEvals :: Int
-} deriving (Generic, Show, Eq, ToJSON, FromJSON)
-
-dataSummaryQuery :: T.Text
-dataSummaryQuery = [r|
-WITH 
-    numberTournaments as (SELECT count(distinct id) as "numberTournaments" FROM tournament where database_id=?)
-  , numberGames as (SELECT count(distinct id) as "numberGames" FROM game where database_id=?)
-  , numberGameEvals as (
-      SELECT count(distinct id) as "numberGameEvals" FROM (
-          SELECT id FROM game WHERE id in (
-            SELECT DISTINCT game_id FROM move_eval
-          ) and game.database_id=?
-      ) as numberGameEvals
-    )
-  , numberMoveEvals as (
-      SELECT count(*) as "numberMoveEvals" 
-      FROM move_eval
-      JOIN game on move_eval.game_id = game.id
-      WHERE game.database_id=?
-    )
-SELECT * 
-FROM numberTournaments
-CROSS JOIN numberGames
-CROSS JOIN numberGameEvals
-CROSS JOIN numberMoveEvals
-|]
-
-type QueryType = (Single Int, Single Int, Single Int, Single Int)
-
-getDataSummary :: DefaultSearchData -> Handler b Service DataSummary
-getDataSummary searchData = do
-  let db = searchDB searchData
-  let arguments = replicate 4 $ PersistInt64 (fromIntegral db)
-  results :: [QueryType] <- runPersist $ rawSql dataSummaryQuery arguments
-  let (Single numTournaments, Single numGames, Single numGameEvals, Single numMoveEvals) = head results
-  return $ DataSummary numTournaments numGames numGameEvals numMoveEvals
-
 evalData :: MoveRequestData -> Handler b Service ([Entity Player], [Helpers.EvalResult])
 evalData mrData = do
   let db = moveRequestDB mrData
@@ -213,7 +227,6 @@ selectEvalResults db tournaments = do
     where_ $ (me ^. MoveEvalGameId ==. g ^. GameId) &&. (g ^. GameTournament ==. t ^. TournamentId) &&. tournamentCondition t &&. (g^.GameDatabaseId ==. val db)
     return (me, g)
 
-
 getMoveEvals :: Key Database -> [Key Tournament] -> Handler b Service [Helpers.EvalResult]
 getMoveEvals db tournaments = runPersist $ selectEvalResults db tournaments
 
@@ -223,99 +236,26 @@ printName = show
 gameRead :: Int -> String
 gameRead = show
 
-type ImpQueryResult = (Single String, Single String, Single String, Single String, Single String, Single String, Single String)
-constructMove :: ImpQueryResult -> (String, ImpMove)
-constructMove (Single db, Single mm, Single mb, Single mw, Single mblack, Single eb, Single em) = (db, ImpMove mm mb mw mblack eb em)
+data MoveRequestData = MoveRequestData {
+  moveRequestDB :: Int
+, moveRequestTournaments :: [Int]
+} deriving (Generic, FromJSON, ToJSON, Show)
 
-type T = (Single Int, Single Int)
-
-useRes :: T -> String
-useRes (Single x, _) = show x
-
-data MoveRequestData = MoveRequestData {moveRequestDB :: Int, moveRequestTournaments :: [Int] } deriving (Generic, FromJSON, ToJSON, Show)
-
-data ResultPercentage = ResultPercentage {
-    ownElo :: Int
-  , opponentElo :: Int
-  , winPercentage :: Int
-  , drawPercentage :: Int} deriving (Generic, FromJSON, ToJSON, Show)
-
-data DefaultSearchData = DefaultSearchData { searchDB :: Int } deriving (Generic, FromJSON, ToJSON, Show)
-
-
-type GameList = [Int]
 type GameEvaluation = Int
 type GameOutcome = Int
 type PlayerKey = Int
 type PlayerGameEvaluations = [(PlayerKey, [(GameEvaluation, GameOutcome)])]
 
-
 parseEvalResults :: (Single Int, Single Int, Single Int, Single Int) -> (PlayerKey, GameEvaluation, GameOutcome)
 parseEvalResults (_, Single playerId, Single evaluation, Single result) = (playerId, evaluation, result)
-
-
-firstInt :: (Single Int, Single Int) -> Int
-firstInt (Single a, _) = a
-
-
--- The evaluation of a move is eval - lag(eval, 1) by game. Top-code at 0.
--- then average by game and color.
--- After that, merge onto the game table and obtain the performance by each player.
-viewQuery :: T.Text
-viewQuery = [r|
-CREATE OR REPLACE VIEW moveevals as (
-  SELECT 
-    game_id
-  , is_white
-  , move_number
-  , greatest(is_white_int*(eval - next_eval), 0) as cploss
-  FROM (
-    SELECT 
-      game_id
-    , is_white
-    , (is_white :: Int)*2-1 as is_white_int
-    , move_number
-    , eval
-    , lead(eval) over (partition by game_id order by id) as next_eval
-    , mate
-    , fen
-    , lead(mate) over (partition by game_id order by id) as next_mate
-    FROM move_eval) as lags);
-|]
-
-evalQueryTemplate :: T.Text
-evalQueryTemplate = [r|
-  WITH me_player as (
-    SELECT g.id as game_id, player_white_id, player_black_id, is_white, cploss, game_result
-    FROM moveevals me
-    JOIN game g
-    ON me.game_id = g.id
-    WHERE g.id in $gameList
-  )
-  SELECT game_id, player_white_id as player_id, avg(cploss)::Int as cploss, avg((game_result+1)*100/2)::Int as result from me_player WHERE is_white group by game_id, player_white_id
-  UNION ALL
-  SELECT game_id, player_black_id as player_id, avg(cploss)::Int as cploss, avg((-game_result+1)*100/2)::Int as result from me_player WHERE not is_white group by game_id, player_black_id;
-|]
-
-
-substituteGameList :: T.Text -> GameList -> T.Text
-substituteGameList template ints = TL.toStrict $ substitute template cont
-  where cont = context [("gameList", listToInClause ints)]
-
--- | Create 'Context' from association list.
-context :: [(String, String)] -> Context
-context assocs x = T.pack $ fromMaybe err . lookup (T.unpack x) $ assocs
-  where err = error $ "Could not find key: " ++ T.unpack x
 
 gameEvaluations :: GameList -> Handler b Service PlayerGameEvaluations
 gameEvaluations gl = do
   runPersist $ rawExecute viewQuery []
   results <- runPersist $ rawSql (substituteGameList evalQueryTemplate gl) []
   let parsed = fmap parseEvalResults results
-  let grouped = fmap (\(_, b, c) -> (b, c)) <$> Helpers.groupWithVal (\(a, _, _) -> a) parsed
+  let grouped = fmap (\(_, b, c) -> (b, c)) <$> Helpers.groupWithVal (Lens.^._1) parsed
   return $ toList grouped
-
-
 
 data UploadData = UploadData { uploadName :: String, uploadText :: T.Text } deriving (Generic, FromJSON)
 data UploadResult = UploadResult (Maybe Int) deriving (Generic, ToJSON)
@@ -323,16 +263,13 @@ data UploadResult = UploadResult (Maybe Int) deriving (Generic, ToJSON)
 data EvaluationRequest = EvaluationRequest { evaluationDB :: Int, evaluationOverwrite :: Bool } deriving (Generic, FromJSON)
 type EvaluationResult = Int
 
-
 addEvaluations :: EvaluationRequest -> Handler b Service EvaluationResult
 addEvaluations request = do
   let dbKey = intToKeyDB $ evaluationDB request
   let overwrite = evaluationOverwrite request
   dbName <- getDBName
   games :: [Entity Game] <- liftIO $ gamesInDB dbName dbKey overwrite
-  evaluations <- liftIO $ do
-    evals :: [[Key MoveEval]] <- sequenceA $ fmap (TF.doAndStoreEvaluationIO dbName) games
-    return evals
+  evaluations <- liftIO $ sequenceA $ fmap (TF.doAndStoreEvaluationIO dbName) games
   return $ length $ concat evaluations
 
 gamesInDB :: String -> Key Database -> Bool -> IO [Entity Game]
@@ -357,7 +294,6 @@ getDBName = do
   dbNameMaybe :: Maybe String <- liftIO $ DC.lookup conf "dbName"
   return $ fromMaybe "dev" dbNameMaybe
 
-
 uploadDB :: UploadData -> Handler b Service UploadResult
 uploadDB upload = do
   let (name, text) = (uploadName upload, uploadText upload)
@@ -374,21 +310,6 @@ data GameRequestData = GameRequestData {
     gameRequestDB :: Int
   , gameRequestTournaments :: [Int]
 } deriving (Generic, FromJSON, ToJSON)
-
-type ChessApi m = 
-       "user"     :> Get '[JSON] (Maybe AppUser) 
-  :<|> "players" :> ReqBody '[JSON] DefaultSearchData :> Post '[JSON] [Entity Player]
-  :<|> "tournaments" :> ReqBody '[JSON] DefaultSearchData :> Post '[JSON] [Entity Tournament]
-  :<|> "databases" :> Get '[JSON] [Entity Database]
-  :<|> "evalResults" :> ReqBody '[JSON] MoveRequestData :> Post '[JSON] [Helpers.EvalResult]
-  :<|> "moveSummary" :> ReqBody '[JSON] MoveRequestData :> Post '[JSON] [Helpers.MoveSummary]
-  :<|> "dataSummary" :> ReqBody '[JSON] DefaultSearchData :> Post '[JSON] DataSummary
-  :<|> "resultPercentages" :> ReqBody '[JSON] DefaultSearchData :> Post '[JSON] [ResultPercentage]
-  :<|> "games" :> ReqBody '[JSON] GameRequestData :> Post '[JSON] [GameDataFormatted]
-  :<|> "uploadDB" :> ReqBody '[JSON] UploadData :> Post '[JSON] UploadResult
-  :<|> "addEvaluations" :> ReqBody '[JSON] EvaluationRequest :> Post '[JSON] EvaluationResult 
-  :<|> "gameEvaluations" :> ReqBody '[JSON] GameList :> Post '[JSON] PlayerGameEvaluations
-  :<|> "moveEvaluations" :> ReqBody '[JSON] MoveEvaluationRequest :> Post '[JSON] [MoveEvaluationData]
 
 data MoveEvaluationRequest = MoveEvaluationRequest {
   moveEvalGames :: GameList
@@ -439,7 +360,6 @@ data MoveEvaluationData = MoveEvaluationData {
 , moveEvalsMoveLoss :: MoveLoss
 } deriving (Show, Generic, ToJSON)
 
-
 data MoveLoss = MoveLossCP Int | MoveLossMate Int deriving (Show, Generic, ToJSON)
 
 getEvalData :: [(Entity Game, Entity MoveEval)] -> [MoveEvaluationData]
@@ -454,29 +374,8 @@ evalHelper ga (meE, meLaggedE) = MoveEvaluationData ga me meLagged (getMoveLoss 
 
 withLag :: [a] -> [(a, a)]
 withLag [] = []
-withLag [_] = []
+withLag (_ : []) = []
 withLag (x1:x2:rest) = (x1, x2) : withLag (x2 : rest)
-
-
-
-moveEvalsQueryTemplate :: T.Text
-moveEvalsQueryTemplate = [r|
-  SELECT 
-    g.id as game_id
-  , player_white_id , player_black_id
-  , is_white
-  , eval, next_eval
-  , mate, next_mate
-  , fen
-  FROM moveevals me
-  JOIN game g
-  ON me.game_id = g.id
-  WHERE g.id in $gameList
-  AND (
-       cploss >= ? 
-    OR ((mate is not null) AND (next_mate is null))
-  )
-|]
 
 getMoveLoss :: MoveEval -> MoveEval -> MoveLoss
 getMoveLoss meBefore meAfter = getMoveLossHelper evalBefore evalAfter mateBefore mateAfter
@@ -491,58 +390,8 @@ getMoveLossHelper _ _ (Just _) (Just _) = MoveLossCP 0
 getMoveLossHelper _ (Just _) (Just before) _ = MoveLossMate before
 getMoveLossHelper _ _ _ _= MoveLossCP 0
 
-
-chessApi :: Proxy (ChessApi (Handler b Service))
-chessApi = Proxy
-
 getMyUser :: Handler b Service (Maybe AppUser)
 getMyUser = currentUserName >>= runPersist . selectUser . fmap T.pack 
-
-apiServer :: Server (ChessApi (Handler b Service)) (Handler b Service)
-apiServer =      getMyUser 
-            :<|> getPlayers
-            :<|> getTournaments 
-            :<|> getDatabases 
-            :<|> getEvalResults 
-            :<|> getMoveSummary 
-            :<|> getDataSummary
-            :<|> getResultPercentages
-            :<|> getGames
-            :<|> uploadDB
-            :<|> addEvaluations
-            :<|> gameEvaluations
-            :<|> moveEvaluationHandler
-
-type ResultPercentageQueryResult = (Single Int, Single Int, Single Int, Single Int)
-
-toResultPercentage :: ResultPercentageQueryResult -> ResultPercentage
-toResultPercentage (Single ownRating, Single oppRating, Single winP, Single drawP) = ResultPercentage ownRating oppRating winP drawP
-
-resultPercentageQuery :: T.Text
-resultPercentageQuery = [r|
-SELECT rating_own
-    , rating_opponent
-    , (100 * avg((result=1)::Int))::Int as share_win
-    , (100 * avg((result=0)::Int)) :: Int as share_draw
-FROM (
-  SELECT game_result as result
-      , 100 * floor(rating1.rating/100) as rating_own
-      , 100 * floor(rating2.rating/100) as rating_opponent
-      , eval, move_number
-  FROM game
-  JOIN player_rating as rating1 ON 
-        game.player_white_id=rating1.player_id
-    AND extract(year from game.date)=rating1.year
-    AND extract(month from game.date)=rating1.month
-  JOIN player_rating as rating2 ON 
-        game.player_black_id=rating2.player_id
-    AND extract(year from game.date)=rating2.year
-    AND extract(month from game.date)=rating2.month
-  JOIN move_eval on game.id=move_eval.game_id
-  WHERE is_white AND move_number>0 and game.database_id=?
-) values
-GROUP BY rating_own, rating_opponent
-|]
 
 type GameData = (Entity Game, Entity Tournament, Entity Player, Entity Player, Entity GameAttribute)
 
@@ -571,7 +420,8 @@ groupSplitter ((g, t, pWhite, pBlack, ga) : rest) = GameDataFormatted g t pWhite
   where allAttributes = ga : fmap (\(_, _, _, _, gat) -> gat) rest
 
 gameDataEqual :: GameData -> GameData -> Bool
-gameDataEqual (g, _, _, _, _) (g', _, _, _, _) = entityKey g == entityKey g'
+gameDataEqual gd gd' = gameKey gd == gameKey gd'
+  where gameKey dat = entityKey (dat Lens.^._1)
 
 gameGrouper :: [GameData] -> [GameDataFormatted]
 gameGrouper allGames = groupSplitter <$> Data.List.groupBy gameDataEqual allGames
@@ -599,22 +449,7 @@ getResultPercentages searchData = do
   results :: [ResultPercentageQueryResult] <- runPersist $ rawSql resultPercentageQuery [PersistInt64 (fromIntegral db)]
   return $ fmap toResultPercentage results
 
-usId :: Maybe T.Text -> Int
-usId = maybe 0 $ read . T.unpack
-
-serviceInit :: String -> SnapletInit b Service
-serviceInit dbName = makeSnaplet "chess" "Chess Service" Nothing $ do
-  pg <- nestSnaplet "pg" servicePG pgsInit
-  d <- nestSnaplet "db" serviceDB $ initPersistWithDB dbName (runMigrationUnsafe migrateAll)
-  addRoutes chessRoutes
-  usr <- liftIO $ newIORef Nothing
-  return $ Service pg d usr
-
-chessRoutes :: [(B.ByteString, Handler b Service ())]
-chessRoutes = [("", serveSnap chessApi apiServer)]
-
-
--- A useful handler for testing
+-- |A useful handler for testing
 nothingHandler :: Handler b Service ()
 nothingHandler = return ()
 

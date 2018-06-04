@@ -15,6 +15,7 @@ library
       Application
     , AppTypes
     , Services.Service
+    , Services.Sql
     , Services.Types
     , Services.StatsHelpers
     , Services.Helpers
