@@ -53,27 +53,36 @@ import qualified Test.Fixtures as TF
 import qualified Test.Helpers as TH
 import Services.Sql
 
+import Data.Aeson
+import Servant.API
+import qualified Data.Text as T
+import Data.Text.Encoding
+import qualified Data.ByteString.Lazy as LBS
+
 data Service = Service {
     _servicePG :: Snaplet Postgres
   , _serviceDB :: Snaplet PersistState
   , _serviceCurrentUser :: IORef (Maybe String)}
 makeLenses ''Service
 
+type (Encoded a) = QueryParam "data" (JSONEncoded a)
+
 -- |The module boils down to this api.
 type ChessApi m = 
        "user"     :> Get '[JSON] (Maybe AppUser) 
-  :<|> "players" :> ReqBody '[JSON] DefaultSearchData :> Post '[JSON] [Entity Player]
-  :<|> "tournaments" :> ReqBody '[JSON] DefaultSearchData :> Post '[JSON] [Entity Tournament]
+  :<|> "players" :> Encoded DefaultSearchData :> Get '[JSON] [Entity Player]
+  :<|> "tournaments" :> Encoded DefaultSearchData :> Get '[JSON] [Entity Tournament]
   :<|> "databases" :> Get '[JSON] [Entity Database]
-  :<|> "evalResults" :> ReqBody '[JSON] MoveRequestData :> Post '[JSON] [Helpers.EvalResult]
-  :<|> "moveSummary" :> ReqBody '[JSON] MoveRequestData :> Post '[JSON] [Helpers.MoveSummary]
-  :<|> "dataSummary" :> ReqBody '[JSON] DefaultSearchData :> Post '[JSON] DataSummary
-  :<|> "resultPercentages" :> ReqBody '[JSON] DefaultSearchData :> Post '[JSON] [ResultPercentage]
-  :<|> "games" :> ReqBody '[JSON] GameRequestData :> Post '[JSON] [GameDataFormatted]
+  :<|> "evalResults" :> Encoded MoveRequestData :> Get '[JSON] [Helpers.EvalResult]
+  :<|> "moveSummary" :> Encoded MoveRequestData :> Get '[JSON] [Helpers.MoveSummary]
+  :<|> "dataSummary" :> Encoded DefaultSearchData :> Get '[JSON] DataSummary
+  :<|> "resultPercentages" :> Encoded DefaultSearchData :> Get '[JSON] [ResultPercentage]
+  :<|> "games" :> Encoded GameRequestData :> Get '[JSON] [GameDataFormatted]
+  :<|> "gameEvaluations" :> Encoded WrappedGameList :> Get '[JSON] PlayerGameEvaluations
+  :<|> "moveEvaluations" :> Encoded MoveEvaluationRequest :> Get '[JSON] [MoveEvaluationData]
+  :<|> "test" :> QueryParam "testData" (JSONEncoded TestData) :> Get '[JSON] [Int]
   :<|> "uploadDB" :> ReqBody '[JSON] UploadData :> Post '[JSON] UploadResult
   :<|> "addEvaluations" :> ReqBody '[JSON] EvaluationRequest :> Post '[JSON] EvaluationResult 
-  :<|> "gameEvaluations" :> ReqBody '[JSON] GameList :> Post '[JSON] PlayerGameEvaluations
-  :<|> "moveEvaluations" :> ReqBody '[JSON] MoveEvaluationRequest :> Post '[JSON] [MoveEvaluationData]
 
 chessApi :: Proxy (ChessApi (Handler b Service))
 chessApi = Proxy
@@ -81,18 +90,49 @@ chessApi = Proxy
 apiServer :: Server (ChessApi (Handler b Service)) (Handler b Service)
 apiServer =
        getMyUser 
-  :<|> getPlayers
-  :<|> getTournaments 
+  :<|> maybeHandler getPlayers
+  :<|> maybeHandler getTournaments 
   :<|> getDatabases 
-  :<|> getEvalResults 
-  :<|> getMoveSummary 
-  :<|> getDataSummary
-  :<|> getResultPercentages
-  :<|> getGames
+  :<|> maybeHandler getEvalResults 
+  :<|> maybeHandler getMoveSummary 
+  :<|> maybeHandler getDataSummary
+  :<|> maybeHandler getResultPercentages
+  :<|> maybeHandler getGames
+  :<|> maybeHandler gameEvaluations
+  :<|> maybeHandler moveEvaluationHandler
+  :<|> maybeHandler testCall'
   :<|> uploadDB
   :<|> addEvaluations
-  :<|> gameEvaluations
-  :<|> moveEvaluationHandler
+
+data WrappedGameList = WrappedGameList { gameList :: GameList } deriving (Generic, FromJSON, ToJSON)
+
+-- A newtype for JSON data sent as query parameter in get
+-- requests
+newtype JSONEncoded a = JSONEncoded { unJSONEncoded :: a }
+  deriving (Eq, Show)
+
+-- A way to decode parameters that are sent through get requests
+instance (FromJSON a) => FromHttpApiData (JSONEncoded a) where
+  parseQueryParam x = case eitherDecode $ LBS.fromStrict $ encodeUtf8 x of
+    Left err -> Left (T.pack err)
+    Right val -> Right (JSONEncoded val)
+
+instance (ToJSON a) => ToHttpApiData (JSONEncoded a) where
+  toQueryParam (JSONEncoded x) = decodeUtf8 $ LBS.toStrict $ encode x
+
+-- Parsing the query parameters into JSON returns a `Maybe (JSONEncoded a)`. In practice,
+-- I'll usually have a function `h :: a -> Handler b Service d`, so this function
+-- creates the required handler from h and returning the monoid `mempty` if
+-- the query could not get parsed
+maybeHandler :: HasDefault d => (a -> Handler b Service d) -> Maybe (JSONEncoded a) -> Handler b Service d
+maybeHandler h getData = do
+  maybe (return defaultVal) (\enc -> h (unJSONEncoded enc)) getData
+
+data TestData = TestData { testInt :: Int, testNames :: [String] } deriving (Show, Generic, FromJSON, ToJSON)
+
+testCall' :: TestData -> Handler b Service [Int]
+testCall' td = do
+  return $ testInt td : fmap length (testNames td)
 
 serviceInit :: String -> SnapletInit b Service
 serviceInit dbName = makeSnaplet "chess" "Chess Service" Nothing $ do
@@ -137,6 +177,15 @@ data DataSummary = DataSummary {
   , numberGameEvals :: Int
   , numberMoveEvals :: Int
 } deriving (Generic, Show, Eq, ToJSON, FromJSON)
+
+class HasDefault a where
+  defaultVal :: a 
+
+instance HasDefault ([a]) where
+  defaultVal = []
+
+instance HasDefault DataSummary where
+  defaultVal = DataSummary 0 0 0 0
 
 data DefaultSearchData = DefaultSearchData { searchDB :: Int } deriving (Generic, FromJSON, ToJSON, Show)
 type QueryType = (Single Int, Single Int, Single Int, Single Int)
@@ -249,8 +298,9 @@ type PlayerGameEvaluations = [(PlayerKey, [(GameEvaluation, GameOutcome)])]
 parseEvalResults :: (Single Int, Single Int, Single Int, Single Int) -> (PlayerKey, GameEvaluation, GameOutcome)
 parseEvalResults (_, Single playerId, Single evaluation, Single result) = (playerId, evaluation, result)
 
-gameEvaluations :: GameList -> Handler b Service PlayerGameEvaluations
-gameEvaluations gl = do
+gameEvaluations :: WrappedGameList -> Handler b Service PlayerGameEvaluations
+gameEvaluations wrapped = do
+  let gl = gameList wrapped
   runPersist $ rawExecute viewQuery []
   results <- runPersist $ rawSql (substituteGameList evalQueryTemplate gl) []
   let parsed = fmap parseEvalResults results
