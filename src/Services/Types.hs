@@ -14,6 +14,7 @@ module Services.Types where
 
 import Data.Time (Day, UTCTime)
 import Database.Persist.TH (persistLowerCase, share, mkPersist, sqlSettings, mkMigrate)
+import Database.Persist (Entity, entityKey)
 import Data.Aeson (toJSON)
 
 share [mkPersist sqlSettings, mkMigrate "migrateAll"] [persistLowerCase|
@@ -107,4 +108,11 @@ instance Show Game
 
 instance Show Player where
   show p = playerFirstName p ++ " " ++ playerLastName p
+
+instance {-# Overlaps #-} Eq (Entity Game)
+  where g == g' = entityKey g == entityKey g'
+
+instance {-# Overlaps #-} Ord (Entity Game) where
+  g >= g' = entityKey g >= entityKey g'
+  g <= g' = entityKey g <= entityKey g'
 

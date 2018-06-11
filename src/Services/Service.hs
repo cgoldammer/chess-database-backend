@@ -7,7 +7,6 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE EmptyDataDecls #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveGeneric     #-}
 {-# LANGUAGE DeriveAnyClass     #-}
@@ -54,8 +53,6 @@ import qualified Test.Helpers as TH
 import Services.Sql
 
 import Data.Aeson
-import Servant.API
-import qualified Data.Text as T
 import Data.Text.Encoding
 import qualified Data.ByteString.Lazy as LBS
 
@@ -104,6 +101,9 @@ apiServer =
   :<|> uploadDB
   :<|> addEvaluations
 
+-- We wrap the game list as a newtype so it can be passed nicely as JSON.
+-- The code would work without wrapping, but, due to HTML intriciacies, lists don't
+-- produce nice JSON, so the resulting URL would be extremely long.
 data WrappedGameList = WrappedGameList { gameList :: GameList } deriving (Generic, FromJSON, ToJSON)
 
 -- A newtype for JSON data sent as query parameter in get
@@ -115,7 +115,7 @@ newtype JSONEncoded a = JSONEncoded { unJSONEncoded :: a }
 instance (FromJSON a) => FromHttpApiData (JSONEncoded a) where
   parseQueryParam x = case eitherDecode $ LBS.fromStrict $ encodeUtf8 x of
     Left err -> Left (T.pack err)
-    Right val -> Right (JSONEncoded val)
+    Right value -> Right (JSONEncoded value)
 
 instance (ToJSON a) => ToHttpApiData (JSONEncoded a) where
   toQueryParam (JSONEncoded x) = decodeUtf8 $ LBS.toStrict $ encode x
@@ -413,9 +413,11 @@ data MoveEvaluationData = MoveEvaluationData {
 data MoveLoss = MoveLossCP Int | MoveLossMate Int deriving (Show, Generic, ToJSON)
 
 getEvalData :: [(Entity Game, Entity MoveEval)] -> [MoveEvaluationData]
-getEvalData dat = concat lagged
-  where lagged = [fmap (evalHelper (fst (head list))) (withLag (fmap snd list)) | list <- grouped]
-        grouped = (fmap snd $ toList $ Helpers.groupWithVal (entityKey .fst) dat) :: [[(Entity Game, Entity MoveEval)]]
+getEvalData dat = concat $ [evalGame game (withLag evals) | (game, evals) <- grouped]
+  where grouped = toList $ (fmap . fmap) snd $ Helpers.groupWithVal fst dat :: [(Entity Game, [Entity MoveEval])]
+
+evalGame :: Entity Game -> [(Entity MoveEval, Entity MoveEval)] -> [MoveEvaluationData]
+evalGame g moveEvals = fmap (evalHelper g) moveEvals
 
 evalHelper :: Entity Game -> (Entity MoveEval, Entity MoveEval) -> MoveEvaluationData
 evalHelper ga (meE, meLaggedE) = MoveEvaluationData ga me meLagged (getMoveLoss me meLagged)

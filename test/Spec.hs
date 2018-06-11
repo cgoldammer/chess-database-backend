@@ -35,7 +35,7 @@ import AppTypes
 import qualified Application as App
 
 main = hspec $ 
-    openingTest
+    -- openingTest
     -- helperTest
     testApi
 
@@ -56,10 +56,6 @@ loginForApi userName = do
 parseDB :: Test.TestResponse -> Maybe [Entity Database]
 parseDB (Test.Json _ bs) = decode bs
 parseDB _ = Nothing
-
-parseGameData :: Test.TestResponse -> Maybe [GameDataFormatted]
-parseGameData (Test.Json _ bs) = decode bs
-parseGameData _ = Nothing
 
 keyInt :: PersistValue -> Maybe Int
 keyInt (PersistInt64 a) = Just $ fromIntegral a
@@ -88,7 +84,7 @@ doIO = do
   unless alreadyRun $ Fix.runJob settings
   return ()
 
-defaultDBName = "game.pgn"
+defaultDBName = "dummy games"
 
 getTimeInt :: IO Int
 getTimeInt = getCurrentTime >>= pure . (1000*) . utcTimeToPOSIXSeconds >>= pure . round
@@ -135,10 +131,13 @@ helperTest = Test.snap (route S.chessRoutes) (S.serviceInit dbName) $
         Test.shouldEqual (Just username) user
 
 testApi :: Spec
-testApi = Test.snap (route S.chessRoutes) (S.serviceInit dbName) $ beforeAll_ doIO $ do
+-- testApi = Test.snap (route S.chessRoutes) (S.serviceInit dbName) $ beforeAll_ doIO) $ do
+testApi = Test.snap (route S.chessRoutes) (S.serviceInit dbName) $ do
+
   describe "In the database functions," $ do
+
     it "there was at least one database stored" $ do
-      dbDatabases :: [Entity Database] <- liftIO $ H.inBackend (DBH.connString dbName) selectList [] []
+      dbDatabases :: [Entity Database] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [] []
       Test.shouldEqual (not (null dbDatabases)) True
 
     it "the databases function returns the right results" $ do
@@ -151,13 +150,13 @@ testApi = Test.snap (route S.chessRoutes) (S.serviceInit dbName) $ beforeAll_ do
         Test.shouldEqual (L.length res) (L.length dbDatabases)
 
     it "the eval averages are returned for every player" $ do
-      (defaultDBId, players, dbGames) <- playerGameData dbname
-      res <- Test.eval $ S.gameEvaluations $ fmap dbKey dbGames
+      (_, players, dbGames) <- playerGameData dbName
+      res <- Test.eval $ S.gameEvaluations $ S.WrappedGameList $ fmap dbKey dbGames
       Test.shouldEqual (L.length res) (L.length players)
 
     it "the move summaries are returned for every player" $ do
-      (players, dbGames) <- playerGameData dbname
-      res <- Test.eval $ S.gameEvaluations $ fmap dbKey dbGames
+      (_, players, dbGames) <- playerGameData dbName
+      res <- Test.eval $ S.gameEvaluations $ WrappedGameList $ fmap dbKey dbGames
       Test.shouldEqual (L.length res) (L.length players)
 
     it "one should only get games for the private databases that a user owns" $ do
@@ -181,6 +180,7 @@ testApi = Test.snap (route S.chessRoutes) (S.serviceInit dbName) $ beforeAll_ do
       Test.shouldEqual (L.length gamesForNewUser) 0
 
   describe "In the API," $ do
+
     it "databases should return what's public in the table" $ do 
       -- Logging in as a user that doesn't own any databases
       username <- liftIO getTimeString
@@ -191,43 +191,45 @@ testApi = Test.snap (route S.chessRoutes) (S.serviceInit dbName) $ beforeAll_ do
       dbDatabases :: [Entity Database] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [(P.==.) DatabaseIsPublic True] []
       let values = fromMaybe [] apiDatabases
       Test.shouldEqual (L.length values) (L.length dbDatabases)
+
     it "a bad URL should 404" $ Test.get "/badApi" >>= Test.should404
+
     it "It should not return a user if no user is set" $ do
       let userName = "testUser"
       res <- Test.get "/user"
       let isFound = L.isInfixOf userName $ show res
       Test.shouldNotBeTrue isFound
+
     it "It should return a user if it is set" $ do
       let userName = "testUser" :: String
       Test.eval $ loginForApi userName
       res <- Test.get "/user"
       let isFound = L.isInfixOf userName $ show res
       Test.shouldBeTrue isFound
-    describe "If I query the /games endpoint then" $ do
+
+    describe "If I query the function to get games then" $ do
+
       it "it doesn't return anything for a non-existent database" $ do
         dbDatabases :: [Entity Database] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [] []
         dbTournaments :: [Entity Tournament] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [] []
         let nonExistingDB = L.maximum (fmap dbKey dbTournaments) + 1
         let tournamentIds = fmap dbKey dbTournaments
-        let requestData = Test.params [("gameRequestDB", B.pack (show nonExistingDB)), ("gameRequestTournaments", B.pack (show tournamentIds))]
-        res <- Test.post "/games" requestData
-        let values = fromMaybe [] $ parseGameData res
-        Test.shouldEqual (L.length values) 0
+        let requestData = GameRequestData nonExistingDB tournamentIds
+        res :: [GameDataFormatted] <- Test.eval $ S.getGames requestData
+        Test.shouldEqual (L.length res) 0
 
       it "it does return values for a database that has games" $ do
         dbDatabases :: [Entity Database] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [] []
         dbTournaments :: [Entity Tournament] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [] []
         dbGames :: [Entity Game] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [] []
+        Test.shouldBeTrue (length dbGames > 0)
         let firstGame = L.head dbGames 
         let gamesForDB = L.filter (\v -> gameDatabaseId (entityVal v) == gameDatabaseId (entityVal firstGame)) dbGames
         let firstGameInt = L.head $ catMaybes $ fmap keyInt $ P.keyToValues $ gameDatabaseId $ entityVal firstGame
         let tournamentIds = fmap dbKey dbTournaments
-
         let requestData = GameRequestData firstGameInt tournamentIds
-        res <- Test.postJson "/games" requestData
-        Test.should200 res
-        let values = fromMaybe [] $ parseGameData res
-        Test.shouldEqual (L.length values) (L.length gamesForDB)
+        res <- Test.eval $ S.getGames requestData
+        Test.shouldEqual (L.length res) (L.length gamesForDB)
 
 
 settings = getSettings Test
