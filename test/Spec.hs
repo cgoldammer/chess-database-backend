@@ -34,10 +34,10 @@ import Data.Attoparsec.Text (parseOnly)
 import AppTypes
 import qualified Application as App
 
-main = hspec $ 
-    -- openingTest
-    -- helperTest
-    testApi
+main = hspec $ do
+  testOpening
+  testHelper
+  testApi
 
 dbName :: String
 dbName = "test"
@@ -104,25 +104,32 @@ playerGameData dbName = do
   dbGames :: [Entity Game] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [(P.==.) GameDatabaseId defaultDBId] []
   return (defaultDBId, players, dbGames)
 
-openingTest :: Spec
-openingTest = describe "The opening module" $ do
+testOpening :: Spec
+testOpening = describe "The opening module" $ do
+
   it "can correctly parse the code" $ 
     expectedTest "A00" (Right "A00") openingCodeParser
+
   it "can parse a simple opening name" $ 
     expectedTest "Test' Opening" (Right "Test' Opening") openingNameParser
+
   it "can parse a incorrect opening name" $ 
     expectedTest "Test' Opening\n" (Right "Test' Opening") openingNameParser
+
   it "can parse an opening name with comments" $ 
     expectedTest "Test' Opening; comments" (Right "Test' Opening") openingNameParser
+
   it "can parse a game move" $ 
     expectedTest "1. e4 1/2" (Right "1. e4") openMoveParser
+
   it "can parse the game list" $ 
     expectedTest "A00 A\n1.a3 1/2" (Right (ListData "A00" "A" "1.a3")) parseListData
+
   it "can parse the game list with newlines" $ 
     expectedTest "A00 A\n1.a3 1/2\n\n\n" (Right (ListData "A00" "A" "1.a3")) parseListData
 
-helperTest :: Spec
-helperTest = Test.snap (route S.chessRoutes) (S.serviceInit dbName) $ 
+testHelper :: Spec
+testHelper = Test.snap (route S.chessRoutes) (S.serviceInit dbName) $ 
     describe "In the testing functions," $ 
       it "the loginForApi actually changes the current user" $ do
         username <- liftIO getTimeString
@@ -131,8 +138,7 @@ helperTest = Test.snap (route S.chessRoutes) (S.serviceInit dbName) $
         Test.shouldEqual (Just username) user
 
 testApi :: Spec
--- testApi = Test.snap (route S.chessRoutes) (S.serviceInit dbName) $ beforeAll_ doIO) $ do
-testApi = Test.snap (route S.chessRoutes) (S.serviceInit dbName) $ do
+testApi = Test.snap (route S.chessRoutes) (S.serviceInit dbName) $ beforeAll_ doIO) $ do
 
   describe "In the database functions," $ do
 
