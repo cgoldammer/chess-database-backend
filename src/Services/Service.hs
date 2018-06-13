@@ -80,6 +80,7 @@ type ChessApi m =
   :<|> "test" :> QueryParam "testData" (JSONEncoded TestData) :> Get '[JSON] [Int]
   :<|> "uploadDB" :> ReqBody '[JSON] UploadData :> Post '[JSON] UploadResult
   :<|> "addEvaluations" :> ReqBody '[JSON] EvaluationRequest :> Post '[JSON] EvaluationResult 
+  :<|> "games2" :> Get '[JSON] [(Entity Game, Entity Tournament, Maybe (Entity OpeningVariation))]
 
 chessApi :: Proxy (ChessApi (Handler b Service))
 chessApi = Proxy
@@ -100,6 +101,7 @@ apiServer =
   :<|> maybeHandler testCall'
   :<|> uploadDB
   :<|> addEvaluations
+  :<|> getGames2
 
 -- We wrap the game list as a newtype so it can be passed nicely as JSON.
 -- The code would work without wrapping, but, due to HTML intriciacies, lists don't
@@ -430,11 +432,13 @@ withLag (_ : []) = []
 withLag (x1:x2:rest) = (x1, x2) : withLag (x2 : rest)
 
 getMoveLoss :: MoveEval -> MoveEval -> MoveLoss
-getMoveLoss meBefore meAfter = getMoveLossHelper evalBefore evalAfter mateBefore mateAfter
+getMoveLoss meBefore meAfter = if bestMovePlayed then MoveLossCP 0 else moveLossBasic
   where evalBefore = moveEvalEval meBefore
         evalAfter = moveEvalEval meAfter
         mateBefore = moveEvalMate meBefore
         mateAfter = moveEvalMate meAfter
+        moveLossBasic = getMoveLossHelper evalBefore evalAfter mateBefore mateAfter
+        bestMovePlayed = moveEvalMovePlayed meBefore == Just (moveEvalMoveBest meBefore)
 
 getMoveLossHelper :: Maybe Int -> Maybe Int -> Maybe Int -> Maybe Int -> MoveLoss
 getMoveLossHelper (Just before) (Just after) _ _ = MoveLossCP $ max (after - before) 0
@@ -445,11 +449,12 @@ getMoveLossHelper _ _ _ _= MoveLossCP 0
 getMyUser :: Handler b Service (Maybe AppUser)
 getMyUser = currentUserName >>= runPersist . selectUser . fmap T.pack 
 
-type GameData = (Entity Game, Entity Tournament, Entity Player, Entity Player, Entity GameAttribute)
+type GameData = (Entity Game, Entity Tournament, Maybe (Entity OpeningVariation), Entity Player, Entity Player, Entity GameAttribute)
 
 data GameDataFormatted = GameDataFormatted {
     gameDataGame :: Entity Game
   , gameDataTournament :: Entity Tournament
+  , gameDataOpening :: Maybe (Entity OpeningVariation)
   , gameDataPlayerWhite :: Entity Player
   , gameDataPlayerBlack :: Entity Player
   , gameDataAttributes :: [Entity GameAttribute]} deriving (Generic, FromJSON, ToJSON)
@@ -468,8 +473,8 @@ getGames requestData = do
     else return []
 
 groupSplitter :: [GameData] -> GameDataFormatted
-groupSplitter ((g, t, pWhite, pBlack, ga) : rest) = GameDataFormatted g t pWhite pBlack allAttributes
-  where allAttributes = ga : fmap (\(_, _, _, _, gat) -> gat) rest
+groupSplitter ((g, t, ov, pWhite, pBlack, ga) : rest) = GameDataFormatted g t ov pWhite pBlack allAttributes
+  where allAttributes = ga : fmap (\(_, _, _, _, _, gat) -> gat) rest
 
 gameDataEqual :: GameData -> GameData -> Bool
 gameDataEqual gd gd' = gameKey gd == gameKey gd'
@@ -485,15 +490,28 @@ getGames' requestData = do
   let tournamentKeys = fmap intToKey tournaments
   let tournamentMatch t = t ^. TournamentId `in_` valList tournamentKeys
   select $ 
-    from $ \(g, t, pWhite, pBlack, ga) -> do
+    from $ \(g `InnerJoin` t `InnerJoin` pWhite `InnerJoin` pBlack `InnerJoin` ga `LeftOuterJoin` ov) -> do
+      on (g ^. GameOpeningVariation ==. ov ?. OpeningVariationId)
+      on (ga ^. GameAttributeGameId ==. g ^. GameId)
+      on (pBlack ^. PlayerId ==. g ^. GamePlayerBlackId) 
+      on (pWhite ^. PlayerId ==. g ^. GamePlayerWhiteId) 
+      on (g ^. GameTournament ==. t ^. TournamentId) 
       where_ $ 
-            (g ^. GameTournament ==. t ^. TournamentId) 
-        &&. (g ^. GameDatabaseId ==. val db)
+            (g ^. GameDatabaseId ==. val db)
         &&. (if not (null tournaments) then tournamentMatch t else not_ (tournamentMatch t))
-        &&. (pWhite ^. PlayerId ==. g ^. GamePlayerWhiteId) 
-        &&. (pBlack ^. PlayerId ==. g ^. GamePlayerBlackId) 
-        &&. (ga ^. GameAttributeGameId ==. g ^. GameId)
-      return (g, t, pWhite, pBlack, ga)
+      return (g, t, ov, pWhite, pBlack, ga)
+
+
+getGames2 :: Handler b Service [(Entity Game, Entity Tournament, Maybe (Entity OpeningVariation))]
+getGames2 = runPersist $ do
+  select $ 
+    from $ \(g `InnerJoin` t `LeftOuterJoin` ov) -> do
+      on (g ^. GameOpeningVariation ==. ov ?. OpeningVariationId)
+      on (g ^. GameTournament ==. t ^. TournamentId) 
+      return (g, t, ov)
+
+  
+  
 
 getResultPercentages :: DefaultSearchData -> Handler b Service [ResultPercentage]
 getResultPercentages searchData = do

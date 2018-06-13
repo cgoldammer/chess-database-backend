@@ -12,9 +12,8 @@
 
 module Services.DatabaseHelpers where
 
-import Database.Persist (insertBy, insert, Key)
+import Database.Persist (selectList, Entity, insertBy, insert, Key, entityVal, entityKey, update, (=.), (==.))
 import Database.Persist.Postgresql (transactionSave)
-import Database.Persist.Sql (Entity, entityKey)
 import Data.Time (Day, fromGregorian)
 import qualified Data.Text as Te (pack, Text)
 import Data.Maybe (isJust, fromJust, listToMaybe)
@@ -42,6 +41,29 @@ connString dbName = trace name name
 keyReader :: forall record. Either (Entity record) (Key record) -> Key record
 keyReader = either entityKey id
 
+-- It can happen that a game doesn't have an opening, and that
+-- with improved algorithms, we can now find an opening. Thus we want a function
+-- that updates the opening of all games without openings.
+addOpeningsToGames :: DataAction ()
+addOpeningsToGames = do
+  openings <- getOpeningData
+  gamesWithoutOpening :: [Entity Game] <- selectList [GameOpeningVariation ==. Nothing] []
+  liftIO $ print $ "Games without: " ++ show (length gamesWithoutOpening)
+  mapM_ (addOpeningToGame openings) gamesWithoutOpening
+
+addOpeningToGame :: OpeningMap -> Entity Game -> DataAction ()
+addOpeningToGame openings entityGame = do
+  let key = entityKey entityGame
+  let pgnGame = Pgn.readSingleGame $ Te.pack $ gamePgn $ entityVal entityGame
+  either (const (return ())) (openingHelper openings key) pgnGame
+
+openingHelper :: OpeningMap -> (Key Game) -> Pgn.PgnGame -> DataAction ()
+openingHelper openings key pgnGame = do
+  let game = (Pgn.parsedPgnGame pgnGame) :: Pgn.Game
+  let opening = entityKey . opVariation <$> getOpening openings game
+  update key [GameOpeningVariation =. opening]
+  return ()
+
 storeGameIntoDB :: Key Database -> OpeningMap -> Pgn.PgnGame -> DataAction (Maybe (Key Game))
 storeGameIntoDB dbResult openings g = do
   let game = Pgn.parsedPgnGame g
@@ -61,7 +83,7 @@ storeGameIntoDB dbResult openings g = do
       gameResult <- keyReader <$> insertBy gm
       -- Storing the tags
       let formattedTags = formatForDB <$> filter (not . isPlayer) tags
-      mapM_ (\(name, val) -> insert (GameAttribute gameResult name val)) formattedTags
+      mapM_ (\(name, v) -> insert (GameAttribute gameResult name v)) formattedTags
       return $ Just gameResult
     else do
       liftIO $ print $ show g
