@@ -40,12 +40,14 @@ import Data.Proxy (Proxy(..))
 import Data.Time.Clock (getCurrentTime)
 import Data.Map (toList)
 import Data.IORef (IORef, readIORef, writeIORef, newIORef)
+import Control.Concurrent (MVar, newMVar, takeMVar, putMVar, forkIO, threadDelay)
 
 import Control.Monad.Logger (runNoLoggingT, NoLoggingT)
 import qualified Database.Persist.Postgresql as PG
 import qualified Data.Configurator as DC (lookup)
 
 import Services.Types
+import Services.Tasks
 import qualified Services.Helpers as Helpers
 import Services.DatabaseHelpers (connString, readTextIntoDB)
 import qualified Test.Fixtures as TF
@@ -59,7 +61,8 @@ import qualified Data.ByteString.Lazy as LBS
 data Service = Service {
     _servicePG :: Snaplet Postgres
   , _serviceDB :: Snaplet PersistState
-  , _serviceCurrentUser :: IORef (Maybe String)}
+  , _serviceCurrentUser :: IORef (Maybe String)
+  , _serviceAllTasks :: MVar AllTasks}
 makeLenses ''Service
 
 type (Encoded a) = QueryParam "data" (JSONEncoded a)
@@ -79,7 +82,7 @@ type ChessApi m =
   :<|> "moveEvaluations" :> Encoded MoveEvaluationRequest :> Get '[JSON] [MoveEvaluationData]
   :<|> "test" :> QueryParam "testData" (JSONEncoded TestData) :> Get '[JSON] [Int]
   :<|> "uploadDB" :> ReqBody '[JSON] UploadData :> Post '[JSON] UploadResult
-  :<|> "addEvaluations" :> ReqBody '[JSON] EvaluationRequest :> Post '[JSON] EvaluationResult 
+  :<|> "addEvaluations" :> ReqBody '[JSON] EvaluationRequest :> Post '[JSON] ()
   :<|> "games2" :> Get '[JSON] [(Entity Game, Entity Tournament, Maybe (Entity OpeningVariation))]
 
 chessApi :: Proxy (ChessApi (Handler b Service))
@@ -142,7 +145,13 @@ serviceInit dbName = makeSnaplet "chess" "Chess Service" Nothing $ do
   d <- nestSnaplet "db" serviceDB $ initPersistWithDB dbName (runMigrationUnsafe migrateAll)
   addRoutes chessRoutes
   usr <- liftIO $ newIORef Nothing
-  return $ Service pg d usr
+
+  -- Creating an MVar with a list of evaluation tasks
+  -- and spinning of a thread to run those evaluations.
+  tasks <- liftIO $ newMVar emptyTasks
+  liftIO $ forkIO $ runEvalThread dbName tasks
+
+  return $ Service pg d usr tasks
 
 chessRoutes :: [(B.ByteString, Handler b Service ())]
 chessRoutes = [("", serveSnap chessApi apiServer)]
@@ -315,15 +324,59 @@ data UploadResult = UploadResult (Maybe Int) deriving (Generic, ToJSON)
 data EvaluationRequest = EvaluationRequest { evaluationDB :: Int, evaluationOverwrite :: Bool } deriving (Generic, FromJSON)
 type EvaluationResult = Int
 
-addEvaluations :: EvaluationRequest -> Handler b Service EvaluationResult
+-- A helper function so we can wait in tenth of seconds.
+waitTenths :: Int -> IO ()
+waitTenths = threadDelay . (*100000)
+
+addEvaluations :: EvaluationRequest -> Handler b Service ()
 addEvaluations request = do
   let dbKey = intToKeyDB $ evaluationDB request
   let overwrite = evaluationOverwrite request
   dbName <- getDBName
   games :: [Entity Game] <- liftIO $ gamesInDB dbName dbKey overwrite
-  evaluations <- liftIO $ sequenceA $ fmap (TF.doAndStoreEvaluationIO dbName) games
-  return $ length $ concat evaluations
+  liftIO $ print $ "Games: " ++ show (length games)
+  user <- currentUserName
+  let newTask = Task "Evaluation" games dbName user
+  m <- gets _serviceAllTasks
+  tasks <- liftIO $ takeMVar m
+  let afterTasks = addTask tasks newTask
+  liftIO $ putMVar m $ afterTasks
+  -- store the evaluations to file so I know what's currently running
+  liftIO $ writeFile "log/tasks.log" $ show afterTasks
+  return ()
 
+
+doNothing :: IO ()
+doNothing = return ()
+
+runTask :: Task -> IO ()
+runTask (Task _ games dbName _) = do
+  sequenceA (fmap (TF.doAndStoreEvaluationIO dbName) games) >> doNothing
+
+-- The thread handler to run evaluations. The idea here is that
+-- we want to be able to asynchronously add evaluation tasks as they come
+-- in from user requests, but we only want to run at most one task
+-- at a time so we don't overload the CPU. In other words, this is a FIFO
+-- queue for tasks. 
+-- This will likely be a bottleneck in the future, so expect this to change
+-- as more users upload databases.
+runEvalThread :: String -> MVar AllTasks -> IO ()
+runEvalThread dbName m = do
+  allTasks <- takeMVar m
+  liftIO $ writeFile "log/tasks.log" $ show allTasks
+  putMVar m allTasks
+  let active = taskActive allTasks
+  maybe doNothing (handleActiveTask m) active
+  waitTenths 10
+  runEvalThread dbName m
+    
+handleActiveTask :: MVar AllTasks -> Task -> IO ()
+handleActiveTask m task = do
+  runTask task
+  allTasksAfter <- takeMVar m
+  putMVar m $ completeActiveTask allTasksAfter
+  return ()
+  
 gamesInDB :: String -> Key Database -> Bool -> IO [Entity Game]
 gamesInDB dbName dbKey overwrite = TH.inBackend (connString dbName) $ do
   let db = val dbKey
@@ -356,7 +409,7 @@ uploadDB upload = do
   return $ UploadResult $ Just $ length results
 
 addDBPermission :: Key Database -> Maybe String -> Handler b Service (Key DatabasePermission)
-addDBPermission dbResult userName = runPersist $ insert $ DatabasePermission dbResult (fromMaybe "" userName) True True False
+addDBPermission dbResult user = runPersist $ insert $ DatabasePermission dbResult (fromMaybe "" user) True True False
 
 data GameRequestData = GameRequestData {
     gameRequestDB :: Int
