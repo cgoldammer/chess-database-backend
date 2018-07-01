@@ -9,6 +9,7 @@
 
 module Test.Fixtures where
 
+import Debug.Trace (traceShow)
 import Database.Persist (Key, insertBy)
 import Database.Persist.Sql 
 import Data.Text as Te (Text, pack)
@@ -96,7 +97,8 @@ parseSet name folder = do
   return (name, files)
 
 getFiles :: AppType -> IO [(String, [String])]
-getFiles Dev = return [("dummy games", ["dev/dummy_games.pgn"]), ("tata small", ["dev/tata_small.pgn"])]
+-- getFiles Dev = return [("dummy games", ["dev/dummy_games.pgn"]), ("tata small", ["dev/tata_small.pgn"])]
+getFiles Dev = return [("dummy games", ["dev/dummy_games.pgn"])]
 getFiles Test = return [("dummy games", ["dev/dummy_games.pgn"])]
 getFiles Prod = mapM (uncurry parseSet) fileSetsProd
 
@@ -145,7 +147,7 @@ doAndStoreEvaluationIO dbName dbGame = do
     (Just game) -> do
       summaries <- liftIO $ Pgn.gameSummaries game
       liftIO $ inBackend (connString dbName) $ do
-        k <- mapM insertBy $ evalToRow (entityKey dbGame) summaries
+        k <- traceShow ("IO" ++ (show summaries)) $ mapM insertBy $ evalToRow (entityKey dbGame) summaries
         return $ rights k
     Nothing ->
       return []
@@ -209,7 +211,7 @@ getGamesFromDB continueEval = do
   return games
 
 evalToRow :: Key Game -> [Pgn.MoveSummary] -> [MoveEval]
-evalToRow g = evalToRowColor g 1 Board.White
+evalToRow g ms = traceShow ("Move summary" ++ show ms) $ evalToRowColor g 1 Board.White ms
 
 evalToRowColor :: Key Game -> Int -> Board.Color -> [Pgn.MoveSummary] -> [MoveEval]
 evalToRowColor _ _ _ [] = []
@@ -217,9 +219,9 @@ evalToRowColor g n Board.White (ms : rest) = constructEvalMove g n True ms : eva
 evalToRowColor g n Board.Black (ms : rest) = constructEvalMove g n False ms : evalToRowColor g (n + 1) Board.White rest
 
 constructEvalMove :: Key Game -> Int -> Bool -> Pgn.MoveSummary -> MoveEval
-constructEvalMove gm n isWhite (Pgn.MoveSummary mv mvBest evalMove _ _ fen) = MoveEval gm n isWhite (Just mv) mvBest eval mate fen
-  where eval = evalInt evalMove
-        mate = evalMate evalMove
+constructEvalMove gm n isWhite (Pgn.MoveSummary mv mvBest evalMove evalBest fen) = MoveEval gm n isWhite (Just mv) mvBest eval evalB mate mateB fen
+  where (eval, mate) = (evalInt evalMove, evalMate evalMove)
+        (evalB, mateB) = (evalInt evalBest, evalMate evalBest)
 
 evalInt :: Stockfish.Evaluation -> Maybe Int 
 evalInt (Right n) = Just n

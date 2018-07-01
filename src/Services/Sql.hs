@@ -75,19 +75,9 @@ CREATE OR REPLACE VIEW moveevals as (
     game_id
   , is_white
   , move_number
-  , greatest(is_white_int*(eval - next_eval), 0) as cploss
-  FROM (
-    SELECT 
-      game_id
-    , is_white
-    , (is_white :: Int)*2-1 as is_white_int
-    , move_number
-    , eval
-    , lead(eval) over (partition by game_id order by id) as next_eval
-    , mate
-    , fen
-    , lead(mate) over (partition by game_id order by id) as next_mate
-    FROM move_eval) as lags);
+  , greatest(((is_white :: Int)*2-1)*(eval_best - eval), 0) as cploss
+  FROM move_eval
+);
 |]
 
 evalQueryTemplate :: T.Text

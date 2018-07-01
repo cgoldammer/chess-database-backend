@@ -168,7 +168,6 @@ newtype MoveAverage = MoveAverage MoveAverageData
 instance ToJSON MoveAverage where
   toJSON (MoveAverage ma) = toJSON $ mapKeys show ma
 
-
 summarizeEvals :: [Entity Player] -> [EvalResult] -> [MoveSummary]
 summarizeEvals players evals = handleMoveAverage playerMap <$> assocs byPlayer
   where byPlayer = movesByPlayer evals 
