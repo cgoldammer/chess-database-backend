@@ -54,6 +54,7 @@ extra-deps:
   - esqueleto-2.5.3
   - snaplet-persistent-0.6.0
   - listsafe-0.1.0.1
+  - mime-mail-ses-0.4.1
   - git: git://github.com/cgoldammer/snaplet-postgresql-simple
     commit: 24843652fd699bd79b67be79e53ceb94bbcd45df 
   # - git: https://github.com/cgoldammer/esqueleto-1

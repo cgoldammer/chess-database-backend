@@ -16,24 +16,28 @@
 
 module Services.Service where
 
+import System.Environment (lookupEnv)
 import GHC.Generics (Generic)
 import Control.Lens (makeLenses, _1)
 import qualified Control.Lens as Lens ((^.))
 import Control.Monad.State.Class (get, gets)
 import Data.Aeson (FromJSON, ToJSON)
+import Snap.Core (modifyResponse, setResponseStatus)
 import Snap.Snaplet (Snaplet, MonadSnaplet, SnapletInit, Handler, with, getSnapletUserConfig, makeSnaplet, nestSnaplet, addRoutes)
 import Snap.Snaplet.PostgresqlSimple (Postgres, HasPostgres, getPostgresState, setLocalPostgresState, pgsInit)
 import qualified Data.ByteString.Char8 as B (pack, ByteString)
-import Data.List (groupBy)
-import qualified Data.Text as T (Text, pack, unpack)
-import Database.Persist (insert, insert_)
+import Data.List (groupBy, intercalate)
+import qualified Data.Text as T (Text, pack, unpack, length)
+import qualified Data.Text.Lazy as LT (pack)
+import Database.Persist (insert, insert_, PersistEntity, keyToValues)
 import qualified Database.Persist.Postgresql as PsP (get, getBy, entityVal)
 import Database.Esqueleto hiding (get)
 import Database.Persist.Sql (rawSql)
 
 import Control.Monad.IO.Class (liftIO, MonadIO)
+import Control.Monad (liftM2)
 import Snap.Snaplet.Persistent (PersistState, HasPersistPool, getPersistPool, initPersistGeneric, runPersist)
-import Data.Maybe (listToMaybe, isJust, fromMaybe)
+import Data.Maybe (catMaybes, listToMaybe, isJust, fromMaybe)
 import Servant.API hiding (GET)
 import Servant (serveSnap, Server)
 import Data.Proxy (Proxy(..))
@@ -41,6 +45,11 @@ import Data.Time.Clock (getCurrentTime)
 import Data.Map (toList)
 import Data.IORef (IORef, readIORef, writeIORef, newIORef)
 import Control.Concurrent (MVar, newMVar, takeMVar, putMVar, forkIO, threadDelay)
+
+import Network.HTTP.Client.TLS (getGlobalManager)
+import Network.HTTP.Client (Manager)
+import Network.Mail.Mime.SES (SES(..), usEast1, renderSendMailSES)
+import Network.Mail.Mime (Address(..), simpleMail')
 
 import Control.Monad.Logger (runNoLoggingT, NoLoggingT)
 import qualified Database.Persist.Postgresql as PG
@@ -53,6 +62,7 @@ import Services.DatabaseHelpers (connString, readTextIntoDB)
 import qualified Test.Fixtures as TF
 import qualified Test.Helpers as TH
 import Services.Sql
+
 
 import Data.Aeson
 import Data.Text.Encoding
@@ -84,6 +94,7 @@ type ChessApi m =
   :<|> "uploadDB" :> ReqBody '[JSON] UploadData :> Post '[JSON] UploadResult
   :<|> "addEvaluations" :> ReqBody '[JSON] EvaluationRequest :> Post '[JSON] ()
   :<|> "games2" :> Get '[JSON] [(Entity Game, Entity Tournament, Maybe (Entity OpeningVariation))]
+  :<|> "sendFeedback" :> ReqBody '[JSON] FeedbackData :> Post '[JSON] ()
 
 chessApi :: Proxy (ChessApi (Handler b Service))
 chessApi = Proxy
@@ -102,10 +113,44 @@ apiServer =
   :<|> maybeHandler gameEvaluations
   :<|> maybeHandler moveEvaluationHandler
   :<|> maybeHandler testCall'
-  :<|> uploadDB
+  :<|> uploadDBHelper
   :<|> addEvaluations
   :<|> getGames2
+  :<|> sendFeedback
 
+data FeedbackData = FeedbackData { fbText :: String, fbEmail :: String } deriving (Generic, FromJSON)
+
+sendFeedback :: FeedbackData -> Handler b Service ()
+sendFeedback (FeedbackData feedbackText feedbackEmail) = do
+  accessCode <- liftIO $ lookupEnv "AWS_ACCESS"
+  secretCode <- liftIO $ lookupEnv "AWS_SECRET"
+  let codes = liftM2 (,) accessCode secretCode
+  let fullText = intercalate ": " [feedbackEmail, feedbackText]
+  liftIO $ maybe doNothing (uncurry (sendEmail fullText)) codes
+
+fromEmail :: String
+fromEmail = "cg@chrisgoldammer.com"
+
+fromAddress :: Address
+fromAddress = Address Nothing (T.pack fromEmail)
+
+toAddress :: Address
+toAddress = Address Nothing "goldammer.christian@gmail.com"
+
+type EmailBody = String
+type AwsAccess = String
+type AwsSecret = String
+
+sendEmail :: EmailBody -> AwsAccess -> AwsSecret -> IO ()
+sendEmail body access secret = do
+  let ses = SES (B.pack fromEmail) [] (B.pack access) (B.pack secret) Nothing usEast1
+  let subject = "feedback"
+  let mail = simpleMail' toAddress fromAddress subject (LT.pack body)
+  manager :: Manager <- getGlobalManager
+  renderSendMailSES manager ses mail
+  return ()
+
+    
 -- We wrap the game list as a newtype so it can be passed nicely as JSON.
 -- The code would work without wrapping, but, due to HTML intriciacies, lists don't
 -- produce nice JSON, so the resulting URL would be extremely long.
@@ -252,6 +297,13 @@ getTournaments searchData = runPersist $ do
       where_ $ (g^.GameDatabaseId ==. db) &&. (t^.TournamentId ==. g^.GameTournament)
       return t
 
+dbKeyInt :: PersistEntity a => Key a -> Int
+dbKeyInt key = head $ catMaybes $ keyInt <$> keyToValues key
+
+keyInt :: PersistValue -> Maybe Int
+keyInt (PersistInt64 a) = Just $ fromIntegral a
+keyInt _ = Nothing
+
 intToKey :: Int -> Key Tournament
 intToKey = toSqlKey . fromIntegral
 
@@ -319,7 +371,9 @@ gameEvaluations wrapped = do
   return $ toList grouped
 
 data UploadData = UploadData { uploadName :: String, uploadText :: T.Text } deriving (Generic, FromJSON)
-data UploadResult = UploadResult (Maybe Int) deriving (Generic, ToJSON)
+data UploadResult = UploadSuccess Int | UploadFailure RequestError deriving (Generic, ToJSON)
+
+data RequestError = UploadTooBig | NotLoggedIn deriving (Generic, ToJSON)
 
 data EvaluationRequest = EvaluationRequest { evaluationDB :: Int, evaluationOverwrite :: Bool } deriving (Generic, FromJSON)
 type EvaluationResult = Int
@@ -342,7 +396,7 @@ addEvaluations request = do
   let afterTasks = addTask tasks newTask
   liftIO $ putMVar m $ afterTasks
   -- store the evaluations to file so I know what's currently running
-  liftIO $ writeFile "log/tasks.log" $ show afterTasks
+  liftIO $ writeFile "/home/cg/chess-backend/log/tasks.log" $ show afterTasks
   return ()
 
 
@@ -363,7 +417,7 @@ runTask (Task _ games dbName _) = do
 runEvalThread :: String -> MVar AllTasks -> IO ()
 runEvalThread dbName m = do
   allTasks <- takeMVar m
-  liftIO $ writeFile "log/tasks.log" $ show allTasks
+  liftIO $ writeFile "/home/cg/chess-backend/log/tasks.log" $ show allTasks
   putMVar m allTasks
   let active = taskActive allTasks
   maybe doNothing (handleActiveTask m) active
@@ -399,14 +453,40 @@ getDBName = do
   dbNameMaybe :: Maybe String <- liftIO $ DC.lookup conf "dbName"
   return $ fromMaybe "dev" dbNameMaybe
 
+
+handleNoUser :: Handler b Service UploadResult
+handleNoUser = do
+  modifyResponse $ setResponseStatus 403 "Data too big"
+  return $ UploadFailure NotLoggedIn
+
+uploadDBHelper :: UploadData -> Handler b Service UploadResult
+uploadDBHelper upload = do
+  currentUser <- currentUserName
+  maybe handleNoUser (\_ -> uploadDB upload) currentUser
+
+-- Uploading a database from the db. The pgn is included
+-- in the `text` property of the JSON.
+-- We are rejecting all uploads that exceed a certain size.
+-- This is hacky, because optimally we'd want to server to not even respond
+-- to those requests, but I haven't figured out if this is possible
+-- to do in Nginx (I'd want a separate limit for this endpoint)
 uploadDB :: UploadData -> Handler b Service UploadResult
 uploadDB upload = do
   let (name, text) = (uploadName upload, uploadText upload)
-  dbName <- getDBName
-  (db, results) <- liftIO $ readTextIntoDB dbName name text False
-  currentUser :: Maybe String <- currentUserName
-  addDBPermission db currentUser
-  return $ UploadResult $ Just $ length results
+  let textLength = T.length text
+  let maxTextLength = 200 * 1024
+  if textLength > maxTextLength
+    then do
+      modifyResponse $ setResponseStatus 403 "Data too big"
+      return $ UploadFailure UploadTooBig
+    else do
+      dbName <- getDBName
+      (db, results) <- liftIO $ readTextIntoDB dbName name text False
+      currentUser :: Maybe String <- currentUserName
+      addDBPermission db currentUser
+      -- Storing evaluations for the database in an asynchronous thread.
+      addEvaluations (EvaluationRequest (dbKeyInt db) False)
+      return $ UploadSuccess $ length results
 
 addDBPermission :: Key Database -> Maybe String -> Handler b Service (Key DatabasePermission)
 addDBPermission dbResult user = runPersist $ insert $ DatabasePermission dbResult (fromMaybe "" user) True True False
@@ -429,13 +509,14 @@ getMoveEvaluationData (MoveEvaluationRequest gl) = do
       return (g, me)
   let filters = filter notAlreadyWinning . filter notAlreadyLosing . filter (highMoveLoss . moveEvalsMoveLoss)
   let cleaned = filters $ getEvalData results
+  -- let cleaned = getEvalData results
   return cleaned
 
 moveLossCutoff :: Int
 moveLossCutoff = 200
 
 highMoveLoss :: MoveLoss -> Bool
-highMoveLoss (MoveLossMate _)= True
+highMoveLoss (MoveLossMate _) = True
 highMoveLoss (MoveLossCP x) = x >= moveLossCutoff
 
 evalCutoff :: Int
@@ -443,17 +524,17 @@ evalCutoff = 300
 
 notAlreadyWinning :: MoveEvaluationData -> Bool
 notAlreadyWinning dat = evalWithColor <= evalCutoff
-  where evalAfter = moveEvalsMoveEvalNext dat
-        wasWhite = not $ moveEvalIsWhite evalAfter
-        evalNum = fromMaybe 0 $ moveEvalEval evalAfter
+  where eval = moveEvalsMoveEval dat
+        wasWhite = moveEvalIsWhite eval
+        evalNum = fromMaybe 0 $ moveEvalEval eval
         evalWithColor = if wasWhite then evalNum else (- evalNum)
 
 notAlreadyLosing :: MoveEvaluationData -> Bool
-notAlreadyLosing dat = evalWithColor <= evalCutoff
-  where evalBest = moveEvalsMoveEval dat
-        wasWhite = moveEvalIsWhite evalBest
-        evalNum = fromMaybe 0 $ moveEvalEval evalBest
-        evalWithColor = if wasWhite then (- evalNum) else evalNum
+notAlreadyLosing dat = evalWithColor >= (-evalCutoff)
+  where eval = moveEvalsMoveEval dat
+        wasWhite = moveEvalIsWhite eval
+        evalNum = fromMaybe 0 $ moveEvalEvalBest eval
+        evalWithColor = if wasWhite then evalNum else (- evalNum)
 
 moveEvaluationHandler :: MoveEvaluationRequest -> Handler b Service [MoveEvaluationData]
 moveEvaluationHandler mer = runPersist $ getMoveEvaluationData mer
@@ -461,43 +542,33 @@ moveEvaluationHandler mer = runPersist $ getMoveEvaluationData mer
 data MoveEvaluationData = MoveEvaluationData {
   moveEvalsGame :: Entity Game
 , moveEvalsMoveEval :: MoveEval
-, moveEvalsMoveEvalNext :: MoveEval
 , moveEvalsMoveLoss :: MoveLoss
 } deriving (Show, Generic, ToJSON)
 
 data MoveLoss = MoveLossCP Int | MoveLossMate Int deriving (Show, Generic, ToJSON)
 
 getEvalData :: [(Entity Game, Entity MoveEval)] -> [MoveEvaluationData]
-getEvalData dat = concat $ [evalGame game (withLag evals) | (game, evals) <- grouped]
+getEvalData dat = concat $ [evalGame game evals | (game, evals) <- grouped]
   where grouped = toList $ (fmap . fmap) snd $ Helpers.groupWithVal fst dat :: [(Entity Game, [Entity MoveEval])]
 
-evalGame :: Entity Game -> [(Entity MoveEval, Entity MoveEval)] -> [MoveEvaluationData]
+evalGame :: Entity Game -> [Entity MoveEval] -> [MoveEvaluationData]
 evalGame g moveEvals = fmap (evalHelper g) moveEvals
 
-evalHelper :: Entity Game -> (Entity MoveEval, Entity MoveEval) -> MoveEvaluationData
-evalHelper ga (meE, meLaggedE) = MoveEvaluationData ga me meLagged (getMoveLoss me meLagged)
-  where me = entityVal meE
-        meLagged = entityVal meLaggedE
+evalHelper :: Entity Game -> Entity MoveEval -> MoveEvaluationData
+evalHelper ga meEntity = MoveEvaluationData ga me $ getMoveLoss me
+  where me = entityVal meEntity
 
-withLag :: [a] -> [(a, a)]
-withLag [] = []
-withLag (_ : []) = []
-withLag (x1:x2:rest) = (x1, x2) : withLag (x2 : rest)
+getMoveLoss :: MoveEval -> MoveLoss
+getMoveLoss (MoveEval _ _ isWhite movePlayed moveBest evalAfter evalBefore mateAfter mateBefore _) = if bestMovePlayed then (MoveLossCP) 0 else moveLossBasic
+  where moveLossBasic = getMoveLossHelper isWhite evalBefore evalAfter mateBefore mateAfter
+        bestMovePlayed = movePlayed == Just moveBest
 
-getMoveLoss :: MoveEval -> MoveEval -> MoveLoss
-getMoveLoss meBefore meAfter = if bestMovePlayed then MoveLossCP 0 else moveLossBasic
-  where evalBefore = moveEvalEval meBefore
-        evalAfter = moveEvalEval meAfter
-        mateBefore = moveEvalMate meBefore
-        mateAfter = moveEvalMate meAfter
-        moveLossBasic = getMoveLossHelper evalBefore evalAfter mateBefore mateAfter
-        bestMovePlayed = moveEvalMovePlayed meBefore == Just (moveEvalMoveBest meBefore)
-
-getMoveLossHelper :: Maybe Int -> Maybe Int -> Maybe Int -> Maybe Int -> MoveLoss
-getMoveLossHelper (Just before) (Just after) _ _ = MoveLossCP $ max (after - before) 0
-getMoveLossHelper _ _ (Just _) (Just _) = MoveLossCP 0
-getMoveLossHelper _ (Just _) (Just before) _ = MoveLossMate before
-getMoveLossHelper _ _ _ _= MoveLossCP 0
+getMoveLossHelper :: Bool -> Maybe Int -> Maybe Int -> Maybe Int -> Maybe Int -> MoveLoss
+getMoveLossHelper True (Just before) (Just after) _ _ = MoveLossCP $ (before - after)
+getMoveLossHelper False (Just before) (Just after) _ _ = MoveLossCP $ (after - before)
+getMoveLossHelper _ _ _ (Just _) (Just _) = MoveLossCP 0
+getMoveLossHelper _ _ (Just _) (Just before) _ = MoveLossMate (-before)
+getMoveLossHelper _ _ _ _ _= MoveLossCP 0
 
 getMyUser :: Handler b Service (Maybe AppUser)
 getMyUser = currentUserName >>= runPersist . selectUser . fmap T.pack 
