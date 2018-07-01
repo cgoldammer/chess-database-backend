@@ -68,6 +68,11 @@ library
     , template
     , listsafe
     , directory
+    , http-client
+    , mime-mail-ses >= 0.4.1
+    , mime-mail
+    , http-client-tls
+    , smtp-mail
 
 Executable app
   hs-source-dirs: src
@@ -117,6 +122,11 @@ Executable app
     , template
     , listsafe
     , directory
+    , http-client
+    , mime-mail-ses >= 0.4.1
+    , mime-mail
+    , http-client-tls
+    , smtp-mail
   main-is: Main.hs
 
 

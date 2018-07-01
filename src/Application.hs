@@ -16,7 +16,7 @@ import Snap.Snaplet.Persistent (PersistState, persistPool)
 import qualified Data.Text as T (unpack)
 import Database.Persist.Sql (runMigrationUnsafe)
 import Snap.Snaplet.Auth.Backends.Persistent (migrateAuth, initPersistAuthManager)
-import Snap.Core (writeBS, method, Method(..))
+import Snap.Core (modifyResponse, setResponseStatus, writeBS, method, Method(..))
 import Snap.Snaplet.Auth (AuthManager, AuthFailure, AuthUser, loginUser, currentUser, userLogin, logout, registerUser)
 import Snap.Snaplet.Heist (Heist, HasHeist, heistLens, heistInit)
 import Snap.Snaplet.Session.Backends.CookieSession (initCookieSessionManager)
@@ -63,12 +63,21 @@ loginRoutes = [
     ("logout", with auth handleLogout >> resetUser)
     ]
 
-nothingHandler :: Handler App (AuthManager App) ()
-nothingHandler = return ()
+writeLoginSuccess :: Handler b (AuthManager b) ()
+writeLoginSuccess = do
+  user <- currentUser
+  let login = (fmap (T.unpack . userLogin) user) :: Maybe String
+  modifyResponse $ setResponseStatus 200 "Success"
+  writeBS $ B.pack $ maybe "" id login
+
+writeLoginFailure :: AuthFailure -> Handler b (AuthManager b) ()
+writeLoginFailure failure = do
+  modifyResponse $ setResponseStatus 403 "Login failed"
+  writeBS $ B.pack $ show failure
 
 handleLoginSubmit :: Handler App (AuthManager App) ()
 handleLoginSubmit = do
-  loginUser "email" "password" Nothing (\err -> writeBS (B.pack ("Error: " ++ show err))) nothingHandler
+  loginUser "email" "password" Nothing writeLoginFailure writeLoginSuccess
   user <- currentUser
   let login = fmap (T.unpack . userLogin) user
   withTop service $ S.changeUser login
@@ -87,17 +96,15 @@ registerNew = method POST $ registerUser "email" "password"
 
 handleNewUser :: Handler App (AuthManager App) ()
 handleNewUser = do 
-    res <- registerNew
-    -- Registering creates a `snap_auth_user` in the database. However, we
-    -- also want to create an `app_user` that is linked to the `snap_auth_user`,
-    -- because this allows us to assume a one-to-one relationship between
-    -- the tables
-    trace (show res) $ case res of
-        Right authUser -> do
-                let usId = userLogin authUser
-                withTop service $ S.createAppUser usId
-                return ()
-        Left _ -> return ()
-
-    handleLoginSubmit
-    return ()
+  res <- registerNew
+  -- Registering creates a `snap_auth_user` in the database. However, we
+  -- also want to create an `app_user` that is linked to the `snap_auth_user`,
+  -- because this allows us to assume a one-to-one relationship between
+  -- the tables
+  trace (show res) $ case res of
+    Right authUser -> do
+      let usId = userLogin authUser
+      withTop service $ S.createAppUser usId
+      handleLoginSubmit
+      writeLoginSuccess
+    Left authFail -> writeLoginFailure authFail
