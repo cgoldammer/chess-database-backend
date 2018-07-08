@@ -97,8 +97,7 @@ parseSet name folder = do
   return (name, files)
 
 getFiles :: AppType -> IO [(String, [String])]
--- getFiles Dev = return [("dummy games", ["dev/dummy_games.pgn"]), ("tata small", ["dev/tata_small.pgn"])]
-getFiles Dev = return [("dummy games", ["dev/dummy_games.pgn"])]
+getFiles Dev = return [("dummy games", ["dev/dummy_games.pgn"]), ("tata small", ["dev/tata_small.pgn"])]
 getFiles Test = return [("dummy games", ["dev/dummy_games.pgn"])]
 getFiles Prod = mapM (uncurry parseSet) fileSetsProd
 
@@ -143,9 +142,10 @@ doEvaluation dbGame  = do
 doAndStoreEvaluationIO :: MonadIO m => String -> Entity Game -> m [Key MoveEval]
 doAndStoreEvaluationIO dbName dbGame = do
   let maybeGame = dbGameToPGN $ entityVal dbGame
+  let evalTime = 100
   case maybeGame of 
     (Just game) -> do
-      summaries <- liftIO $ Pgn.gameSummaries game
+      summaries <- liftIO $ Pgn.gameSummaries evalTime game
       liftIO $ inBackend (connString dbName) $ do
         k <- traceShow ("IO" ++ (show summaries)) $ mapM insertBy $ evalToRow (entityKey dbGame) summaries
         return $ rights k
@@ -165,14 +165,15 @@ ratingQuery :: Text
 ratingQuery = [r|
 SELECT player_id, extract(year from date) as year, extract(month from date) as month, avg(rating)::Int
 FROM (
-  SELECT player_black_id as player_id, date, value::Int as rating
+  SELECT player_black_id as player_id, date, CAST((COALESCE(value,'0')) AS INTEGER) as rating
   FROM game
-  JOIN game_attribute ON game.id=game_attribute.game_id AND attribute='BlackPlayerElo'
+  JOIN game_attribute ON game.id=game_attribute.game_id AND attribute in ('BlackElo','BlackPlayerElo')
   UNION ALL
-  SELECT player_white_id as player_id, date, value::Int as rating
+  SELECT player_white_id as player_id, date, CAST((COALESCE(value,'0')) AS INTEGER) as rating
   FROM game
-  JOIN game_attribute ON game.id=game_attribute.game_id AND attribute='WhitePlayerElo'
+  JOIN game_attribute ON game.id=game_attribute.game_id AND attribute in ('WhiteElo', 'WhitePlayerElo')
 ) values
+WHERE rating > 0
 GROUP BY player_id, year, month
 |]
 
@@ -189,7 +190,6 @@ addRatings = do
   results :: [RatingQueryType] <- rawSql ratingQuery []
   mapM_ (insertBy . readRatingQuery) results
   return ()
- 
 
 sqlGamesAll :: Text
 sqlGamesAll = [r|

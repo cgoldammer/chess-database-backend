@@ -29,7 +29,7 @@ import qualified Data.ByteString.Char8 as B (pack, ByteString)
 import Data.List (groupBy, intercalate)
 import qualified Data.Text as T (Text, pack, unpack, length)
 import qualified Data.Text.Lazy as LT (pack)
-import Database.Persist (insert, insert_, PersistEntity, keyToValues)
+import Database.Persist (insert, insert_)
 import qualified Database.Persist.Postgresql as PsP (get, getBy, entityVal)
 import Database.Esqueleto hiding (get)
 import Database.Persist.Sql (rawSql)
@@ -37,7 +37,7 @@ import Database.Persist.Sql (rawSql)
 import Control.Monad.IO.Class (liftIO, MonadIO)
 import Control.Monad (liftM2)
 import Snap.Snaplet.Persistent (PersistState, HasPersistPool, getPersistPool, initPersistGeneric, runPersist)
-import Data.Maybe (catMaybes, listToMaybe, isJust, fromMaybe)
+import Data.Maybe (listToMaybe, isJust, fromMaybe)
 import Servant.API hiding (GET)
 import Servant (serveSnap, Server)
 import Data.Proxy (Proxy(..))
@@ -57,7 +57,7 @@ import qualified Data.Configurator as DC (lookup)
 
 import Services.Types
 import Services.Tasks
-import qualified Services.Helpers as Helpers
+import Services.Helpers (groupWithVal, EvalResult, MoveSummary, summarizeEvals, dbKeyInt, intToKeyGame, intToKeyDB, intToKey)
 import Services.DatabaseHelpers (connString, readTextIntoDB)
 import qualified Test.Fixtures as TF
 import qualified Test.Helpers as TH
@@ -83,8 +83,8 @@ type ChessApi m =
   :<|> "players" :> Encoded DefaultSearchData :> Get '[JSON] [Entity Player]
   :<|> "tournaments" :> Encoded DefaultSearchData :> Get '[JSON] [Entity Tournament]
   :<|> "databases" :> Get '[JSON] [Entity Database]
-  :<|> "evalResults" :> Encoded MoveRequestData :> Get '[JSON] [Helpers.EvalResult]
-  :<|> "moveSummary" :> Encoded MoveRequestData :> Get '[JSON] [Helpers.MoveSummary]
+  :<|> "evalResults" :> Encoded MoveRequestData :> Get '[JSON] [EvalResult]
+  :<|> "moveSummary" :> Encoded MoveRequestData :> Get '[JSON] [MoveSummary]
   :<|> "dataSummary" :> Encoded DefaultSearchData :> Get '[JSON] DataSummary
   :<|> "resultPercentages" :> Encoded DefaultSearchData :> Get '[JSON] [ResultPercentage]
   :<|> "games" :> Encoded GameRequestData :> Get '[JSON] [GameDataFormatted]
@@ -255,15 +255,19 @@ getDataSummary searchData = do
   return $ DataSummary numTournaments numGames numGameEvals numMoveEvals
 
 data ResultPercentage = ResultPercentage {
-    ownElo :: Int
-  , opponentElo :: Int
-  , winPercentage :: Int
-  , drawPercentage :: Int} deriving (Generic, FromJSON, ToJSON, Show)
+    rpOwnElo :: Int
+  , rpOpponentElo :: Int
+  , rpEvaluation :: Int
+  , rpWinPercentage :: Int
+  , rpDrawPercentage :: Int
+  , rpNumberEvals :: Int
 
-type ResultPercentageQueryResult = (Single Int, Single Int, Single Int, Single Int)
+} deriving (Generic, FromJSON, ToJSON, Show)
+
+type ResultPercentageQueryResult = (Single Int, Single Int, Single Int, Single Int, Single Int, Single Int)
 
 toResultPercentage :: ResultPercentageQueryResult -> ResultPercentage
-toResultPercentage (Single ownRating, Single oppRating, Single winP, Single drawP) = ResultPercentage ownRating oppRating winP drawP
+toResultPercentage (Single ownRating, Single oppRating, Single evalGroup, Single winP, Single drawP, Single numberEvals) = ResultPercentage ownRating oppRating evalGroup winP drawP numberEvals
 
 getPlayers :: DefaultSearchData -> Handler b Service [Entity Player]
 getPlayers searchData = runPersist $ do
@@ -297,23 +301,7 @@ getTournaments searchData = runPersist $ do
       where_ $ (g^.GameDatabaseId ==. db) &&. (t^.TournamentId ==. g^.GameTournament)
       return t
 
-dbKeyInt :: PersistEntity a => Key a -> Int
-dbKeyInt key = head $ catMaybes $ keyInt <$> keyToValues key
-
-keyInt :: PersistValue -> Maybe Int
-keyInt (PersistInt64 a) = Just $ fromIntegral a
-keyInt _ = Nothing
-
-intToKey :: Int -> Key Tournament
-intToKey = toSqlKey . fromIntegral
-
-intToKeyDB :: Int -> Key Database
-intToKeyDB = toSqlKey . fromIntegral
-
-intToKeyGame :: Int -> Key Game
-intToKeyGame = toSqlKey . fromIntegral
-
-evalData :: MoveRequestData -> Handler b Service ([Entity Player], [Helpers.EvalResult])
+evalData :: MoveRequestData -> Handler b Service ([Entity Player], [EvalResult])
 evalData mrData = do
   let db = moveRequestDB mrData
   let tournaments = moveRequestTournaments mrData
@@ -322,15 +310,15 @@ evalData mrData = do
   evals <- getMoveEvals (intToKeyDB db) tournamentKeys
   return (players, evals)
 
-getEvalResults :: MoveRequestData -> Handler b Service [Helpers.EvalResult]
+getEvalResults :: MoveRequestData -> Handler b Service [EvalResult]
 getEvalResults = fmap snd . evalData
 
-getMoveSummary :: MoveRequestData -> Handler b Service [Helpers.MoveSummary]
+getMoveSummary :: MoveRequestData -> Handler b Service [MoveSummary]
 getMoveSummary mrData = do
   (playerKeys, evals) <- evalData mrData
-  return $ Helpers.summarizeEvals playerKeys evals
+  return $ summarizeEvals playerKeys evals
 
-selectEvalResults :: MonadIO m => Key Database -> [Key Tournament] -> SqlPersistT m [Helpers.EvalResult]
+selectEvalResults :: MonadIO m => Key Database -> [Key Tournament] -> SqlPersistT m [EvalResult]
 selectEvalResults db tournaments = do
   let tournamentMatch t = t ^. TournamentId `in_` valList tournaments
   let tournamentCondition t = if not (null tournaments) then tournamentMatch t else val True
@@ -339,7 +327,7 @@ selectEvalResults db tournaments = do
     where_ $ (me ^. MoveEvalGameId ==. g ^. GameId) &&. (g ^. GameTournament ==. t ^. TournamentId) &&. tournamentCondition t &&. (g^.GameDatabaseId ==. val db)
     return (me, g)
 
-getMoveEvals :: Key Database -> [Key Tournament] -> Handler b Service [Helpers.EvalResult]
+getMoveEvals :: Key Database -> [Key Tournament] -> Handler b Service [EvalResult]
 getMoveEvals db tournaments = runPersist $ selectEvalResults db tournaments
 
 printName :: GameAttributeId -> String
@@ -367,7 +355,7 @@ gameEvaluations wrapped = do
   runPersist $ rawExecute viewQuery []
   results <- runPersist $ rawSql (substituteGameList evalQueryTemplate gl) []
   let parsed = fmap parseEvalResults results
-  let grouped = fmap (\(_, b, c) -> (b, c)) <$> Helpers.groupWithVal (Lens.^._1) parsed
+  let grouped = fmap (\(_, b, c) -> (b, c)) <$> groupWithVal (Lens.^._1) parsed
   return $ toList grouped
 
 data UploadData = UploadData { uploadName :: String, uploadText :: T.Text } deriving (Generic, FromJSON)
@@ -509,7 +497,6 @@ getMoveEvaluationData (MoveEvaluationRequest gl) = do
       return (g, me)
   let filters = filter notAlreadyWinning . filter notAlreadyLosing . filter (highMoveLoss . moveEvalsMoveLoss)
   let cleaned = filters $ getEvalData results
-  -- let cleaned = getEvalData results
   return cleaned
 
 moveLossCutoff :: Int
@@ -549,7 +536,7 @@ data MoveLoss = MoveLossCP Int | MoveLossMate Int deriving (Show, Generic, ToJSO
 
 getEvalData :: [(Entity Game, Entity MoveEval)] -> [MoveEvaluationData]
 getEvalData dat = concat $ [evalGame game evals | (game, evals) <- grouped]
-  where grouped = toList $ (fmap . fmap) snd $ Helpers.groupWithVal fst dat :: [(Entity Game, [Entity MoveEval])]
+  where grouped = toList $ (fmap . fmap) snd $ groupWithVal fst dat :: [(Entity Game, [Entity MoveEval])]
 
 evalGame :: Entity Game -> [Entity MoveEval] -> [MoveEvaluationData]
 evalGame g moveEvals = fmap (evalHelper g) moveEvals
@@ -633,9 +620,6 @@ getGames2 = runPersist $ do
       on (g ^. GameOpeningVariation ==. ov ?. OpeningVariationId)
       on (g ^. GameTournament ==. t ^. TournamentId) 
       return (g, t, ov)
-
-  
-  
 
 getResultPercentages :: DefaultSearchData -> Handler b Service [ResultPercentage]
 getResultPercentages searchData = do

@@ -96,15 +96,21 @@ evalQueryTemplate = [r|
 
 resultPercentageQuery :: T.Text
 resultPercentageQuery = [r|
-SELECT rating_own
-    , rating_opponent
-    , (100 * avg((result=1)::Int))::Int as share_win
-    , (100 * avg((result=0)::Int)) :: Int as share_draw
+SELECT 
+  rating_own
+, rating_opponent
+, eval
+, round(100 * avg((result=1)::Int)) :: Int as share_win
+, round(100 * avg((result=0)::Int)) :: Int as share_draw
+, count(*) as number_evals
 FROM (
-  SELECT game_result as result
-      , 100 * floor(rating1.rating/100) as rating_own
-      , 100 * floor(rating2.rating/100) as rating_opponent
-      , eval, move_number
+  SELECT 
+    game_result * (is_white :: Int) * 2 - 1 as result
+  , 100 * floor(rating1.rating/100) as rating_own
+  , 100 * floor(rating2.rating/100) as rating_opponent
+  , round((eval * ((is_white :: Int) * 2 - 1)/100)) as eval
+  , move_number
+  , (is_white :: Int) * 2 - 1 as color_int
   FROM game
   JOIN player_rating as rating1 ON 
         game.player_white_id=rating1.player_id
@@ -115,8 +121,11 @@ FROM (
     AND extract(year from game.date)=rating2.year
     AND extract(month from game.date)=rating2.month
   JOIN move_eval on game.id=move_eval.game_id
-  WHERE is_white AND move_number>0 and game.database_id=?
+  WHERE 
+            move_number>0 
+        AND game.database_id=?
+        AND eval is not null
 ) values
-GROUP BY rating_own, rating_opponent
+GROUP BY rating_own, rating_opponent, eval
 |]
 
