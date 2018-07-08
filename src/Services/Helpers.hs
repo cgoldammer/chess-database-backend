@@ -17,12 +17,14 @@ import Prelude hiding (lookup)
 import GHC.Generics (Generic)
 import Data.Map (Map, mapKeys, assocs, lookup, elems, fromList, mapWithKey)
 import Data.Aeson.Types (ToJSON, toJSON, fieldLabelModifier, genericToJSON, defaultOptions)
-import Database.Persist.Postgresql (Key, entityKey, entityVal, Entity)
+import Database.Persist (PersistEntity, PersistValue( PersistInt64), keyToValues)
+import Database.Persist.Postgresql (Key, entityKey, entityVal, Entity, toSqlKey)
 import Data.Char (toLower)
 import Data.List (sortOn, groupBy)
 import Control.Monad (join)
 import Data.Maybe (fromJust, fromMaybe)
 import Control.Lens ((^.), _1, _2, _3, to)
+import Data.Maybe (catMaybes)
 import qualified Data.List.Safe as Safe (head)
 
 import Services.StatsHelpers
@@ -181,4 +183,23 @@ summarizeByPlayer _ evals = list
   where list = assocs $ movesByPlayer evals 
 
 type IsWhite = Bool
+
+dbKey :: PersistEntity a => Entity a -> Int
+dbKey ent = dbKeyInt $ entityKey ent
+
+dbKeyInt :: PersistEntity a => Key a -> Int
+dbKeyInt key = head $ catMaybes $ keyInt <$> keyToValues key
+
+keyInt :: PersistValue -> Maybe Int
+keyInt (PersistInt64 a) = Just $ fromIntegral a
+keyInt _ = Nothing
+
+intToKey :: Int -> Key Tournament
+intToKey = toSqlKey . fromIntegral
+
+intToKeyDB :: Int -> Key Database
+intToKeyDB = toSqlKey . fromIntegral
+
+intToKeyGame :: Int -> Key Game
+intToKeyGame = toSqlKey . fromIntegral
 

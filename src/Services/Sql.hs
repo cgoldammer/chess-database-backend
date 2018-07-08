@@ -105,7 +105,7 @@ SELECT
 , count(*) as number_evals
 FROM (
   SELECT 
-    game_result * (is_white :: Int) * 2 - 1 as result
+    game_result * ((is_white :: Int) * 2 - 1) as result
   , 100 * floor(rating1.rating/100) as rating_own
   , 100 * floor(rating2.rating/100) as rating_opponent
   , round((eval * ((is_white :: Int) * 2 - 1)/100)) as eval

@@ -134,23 +134,30 @@ evaluateGames = do
 
 
 doEvaluation :: (MonadReader FixtureSettings m, MonadIO m) => Entity Game -> m [Key MoveEval]
-doEvaluation dbGame  = do
+doEvaluation dbGame = do
   dbName <- reader settingsDBName
-  doAndStoreEvaluationIO dbName dbGame
+  storeEvaluationIO dbName dbGame
 
+type SummaryFunction = Int -> Logic.Game -> IO [Pgn.MoveSummary]
 
-doAndStoreEvaluationIO :: MonadIO m => String -> Entity Game -> m [Key MoveEval]
-doAndStoreEvaluationIO dbName dbGame = do
+storeEvaluationIOHelper :: MonadIO m => SummaryFunction -> String -> Entity Game -> m [Key MoveEval]
+storeEvaluationIOHelper summaryFunction dbName dbGame = do
   let maybeGame = dbGameToPGN $ entityVal dbGame
   let evalTime = 100
   case maybeGame of 
     (Just game) -> do
-      summaries <- liftIO $ Pgn.gameSummaries evalTime game
+      summaries <- liftIO $ summaryFunction evalTime game
       liftIO $ inBackend (connString dbName) $ do
         k <- traceShow ("IO" ++ (show summaries)) $ mapM insertBy $ evalToRow (entityKey dbGame) summaries
         return $ rights k
     Nothing ->
       return []
+
+storeEvaluationIO :: MonadIO m => String -> Entity Game -> m [Key MoveEval]
+storeEvaluationIO = storeEvaluationIOHelper Pgn.gameSummaries
+
+storeEvaluationIOFake :: MonadIO m => String -> Entity Game -> m [Key MoveEval]
+storeEvaluationIOFake = storeEvaluationIOHelper Pgn.gameSummariesFake
 
 -- | Adds structured player ratings to the database.
 -- These ratings are already stored in raw format as part of the 
@@ -167,13 +174,13 @@ SELECT player_id, extract(year from date) as year, extract(month from date) as m
 FROM (
   SELECT player_black_id as player_id, date, CAST((COALESCE(value,'0')) AS INTEGER) as rating
   FROM game
-  JOIN game_attribute ON game.id=game_attribute.game_id AND attribute in ('BlackElo','BlackPlayerElo')
+  JOIN game_attribute ON game.id=game_attribute.game_id AND attribute='BlackElo' and value != ''
   UNION ALL
   SELECT player_white_id as player_id, date, CAST((COALESCE(value,'0')) AS INTEGER) as rating
   FROM game
-  JOIN game_attribute ON game.id=game_attribute.game_id AND attribute in ('WhiteElo', 'WhitePlayerElo')
+  JOIN game_attribute ON game.id=game_attribute.game_id AND attribute='WhiteElo' and value != ''
 ) values
-WHERE rating > 0
+WHERE rating > 0 and date is not null
 GROUP BY player_id, year, month
 |]
 

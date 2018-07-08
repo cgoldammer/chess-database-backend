@@ -393,7 +393,7 @@ doNothing = return ()
 
 runTask :: Task -> IO ()
 runTask (Task _ games dbName _) = do
-  sequenceA (fmap (TF.doAndStoreEvaluationIO dbName) games) >> doNothing
+  sequenceA (fmap (TF.storeEvaluationIO dbName) games) >> doNothing
 
 -- The thread handler to run evaluations. The idea here is that
 -- we want to be able to asynchronously add evaluation tasks as they come

@@ -22,6 +22,7 @@ import Data.Time
 import Data.Time.Clock.POSIX
 import Data.Either.Combinators (rightToMaybe)
 
+import Services.Helpers
 import Test.Helpers as H
 import Services.Service as S
 import Services.DatabaseHelpers as DBH
@@ -56,16 +57,6 @@ loginForApi userName = do
 parseDB :: Test.TestResponse -> Maybe [Entity Database]
 parseDB (Test.Json _ bs) = decode bs
 parseDB _ = Nothing
-
-keyInt :: PersistValue -> Maybe Int
-keyInt (PersistInt64 a) = Just $ fromIntegral a
-keyInt _ = Nothing
-
-dbKeyInt :: P.PersistEntity a => Key a -> Int
-dbKeyInt key = L.head $ catMaybes $ keyInt <$> P.keyToValues key
-
-dbKey :: P.PersistEntity a => Entity a -> Int
-dbKey = dbKeyInt . P.entityKey
 
 -- Setting up the database fixtures. This function is time-intensive, and run
 -- once before a set of tests is executed. These tests do not modify the data.
@@ -138,7 +129,7 @@ testHelper = Test.snap (route S.chessRoutes) (S.serviceInit dbName) $
         Test.shouldEqual (Just username) user
 
 testApi :: Spec
-testApi = Test.snap (route S.chessRoutes) (S.serviceInit dbName) $ beforeAll_ doIO) $ do
+testApi = Test.snap (route S.chessRoutes) (S.serviceInit dbName) $ beforeAll_ doIO $ do
 
   describe "In the database functions," $ do
 
