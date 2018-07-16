@@ -7,5 +7,13 @@ private_notes.md
 MonadCatchIO-transformers/
 schema.txt
 private_notes.md
-snaplets/
 
+snaplets/chess
+snaplets/elq
+snaplets/log
+snaplets/persist
+snaplets/persist-auth
+snaplets/postgresql-simple
+snaplets/service
+snaplets/site_key.txt
+snaplets/snaplets

@@ -118,15 +118,19 @@ apiServer =
   :<|> getGames2
   :<|> sendFeedback
 
+
 data FeedbackData = FeedbackData { fbText :: String, fbEmail :: String } deriving (Generic, FromJSON)
 
-sendFeedback :: FeedbackData -> Handler b Service ()
-sendFeedback (FeedbackData feedbackText feedbackEmail) = do
+trySendEmail :: String -> String -> String -> IO ()
+trySendEmail subject to body = do
+  let toAdd = Address Nothing (T.pack to)
   accessCode <- liftIO $ lookupEnv "AWS_ACCESS"
   secretCode <- liftIO $ lookupEnv "AWS_SECRET"
   let codes = liftM2 (,) accessCode secretCode
-  let fullText = intercalate ": " [feedbackEmail, feedbackText]
-  liftIO $ maybe doNothing (uncurry (sendEmail fullText)) codes
+  liftIO $ maybe doNothing (uncurry (sendEmail subject toAdd body)) codes
+
+sendFeedback :: FeedbackData -> Handler b Service ()
+sendFeedback (FeedbackData feedbackText feedbackEmail) = liftIO $ trySendEmail "Feedback" "goldammer.christian@gmail.com" $ intercalate ": " [feedbackEmail, feedbackText]
 
 fromEmail :: String
 fromEmail = "cg@chrisgoldammer.com"
@@ -134,18 +138,14 @@ fromEmail = "cg@chrisgoldammer.com"
 fromAddress :: Address
 fromAddress = Address Nothing (T.pack fromEmail)
 
-toAddress :: Address
-toAddress = Address Nothing "goldammer.christian@gmail.com"
-
 type EmailBody = String
 type AwsAccess = String
 type AwsSecret = String
 
-sendEmail :: EmailBody -> AwsAccess -> AwsSecret -> IO ()
-sendEmail body access secret = do
+sendEmail :: String -> Address -> EmailBody -> AwsAccess -> AwsSecret -> IO ()
+sendEmail subject to body access secret = do
   let ses = SES (B.pack fromEmail) [] (B.pack access) (B.pack secret) Nothing usEast1
-  let subject = "feedback"
-  let mail = simpleMail' toAddress fromAddress subject (LT.pack body)
+  let mail = simpleMail' to fromAddress (T.pack subject) (LT.pack body)
   manager :: Manager <- getGlobalManager
   renderSendMailSES manager ses mail
   return ()
