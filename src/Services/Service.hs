@@ -57,7 +57,7 @@ import qualified Data.Configurator as DC (lookup)
 
 import Services.Types
 import Services.Tasks
-import Services.Helpers (groupWithVal, EvalResult, MoveSummary, summarizeEvals, dbKeyInt, intToKeyGame, intToKeyDB, intToKey)
+import Services.Helpers (groupWithVal, EvalResult, MoveSummary, summarizeEvals, dbKeyInt, dbKey, intToKeyDB, intToKey)
 import Services.DatabaseHelpers (connString, readTextIntoDB)
 import qualified Test.Fixtures as TF
 import qualified Test.Helpers as TH
@@ -88,12 +88,11 @@ type ChessApi m =
   :<|> "dataSummary" :> Encoded DefaultSearchData :> Get '[JSON] DataSummary
   :<|> "resultPercentages" :> Encoded DefaultSearchData :> Get '[JSON] [ResultPercentage]
   :<|> "games" :> Encoded GameRequestData :> Get '[JSON] [GameDataFormatted]
-  :<|> "gameEvaluations" :> Encoded WrappedGameList :> Get '[JSON] PlayerGameEvaluations
-  :<|> "moveEvaluations" :> Encoded MoveEvaluationRequest :> Get '[JSON] [MoveEvaluationData]
+  :<|> "gameEvaluations" :> Encoded GameRequestData :> Get '[JSON] PlayerGameEvaluations
+  :<|> "moveEvaluations" :> Encoded GameRequestData :> Get '[JSON] [MoveEvaluationData]
   :<|> "test" :> QueryParam "testData" (JSONEncoded TestData) :> Get '[JSON] [Int]
   :<|> "uploadDB" :> ReqBody '[JSON] UploadData :> Post '[JSON] UploadResult
   :<|> "addEvaluations" :> ReqBody '[JSON] EvaluationRequest :> Post '[JSON] ()
-  :<|> "games2" :> Get '[JSON] [(Entity Game, Entity Tournament, Maybe (Entity OpeningVariation))]
   :<|> "sendFeedback" :> ReqBody '[JSON] FeedbackData :> Post '[JSON] ()
 
 chessApi :: Proxy (ChessApi (Handler b Service))
@@ -115,7 +114,6 @@ apiServer =
   :<|> maybeHandler testCall'
   :<|> uploadDBHelper
   :<|> addEvaluations
-  :<|> getGames2
   :<|> sendFeedback
 
 
@@ -349,9 +347,10 @@ type PlayerGameEvaluations = [(PlayerKey, [(GameEvaluation, GameOutcome)])]
 parseEvalResults :: (Single Int, Single Int, Single Int, Single Int) -> (PlayerKey, GameEvaluation, GameOutcome)
 parseEvalResults (_, Single playerId, Single evaluation, Single result) = (playerId, evaluation, result)
 
-gameEvaluations :: WrappedGameList -> Handler b Service PlayerGameEvaluations
-gameEvaluations wrapped = do
-  let gl = gameList wrapped
+gameEvaluations :: GameRequestData -> Handler b Service PlayerGameEvaluations
+gameEvaluations grd = do
+  games <- getJustGames grd
+  let gl = fmap dbKey games
   runPersist $ rawExecute viewQuery []
   results <- runPersist $ rawSql (substituteGameList evalQueryTemplate gl) []
   let parsed = fmap parseEvalResults results
@@ -372,10 +371,10 @@ waitTenths = threadDelay . (*100000)
 
 addEvaluations :: EvaluationRequest -> Handler b Service ()
 addEvaluations request = do
-  let dbKey = intToKeyDB $ evaluationDB request
+  let keyForDB = intToKeyDB $ evaluationDB request
   let overwrite = evaluationOverwrite request
   dbName <- getDBName
-  games :: [Entity Game] <- liftIO $ gamesInDB dbName dbKey overwrite
+  games :: [Entity Game] <- liftIO $ gamesInDB dbName keyForDB overwrite
   liftIO $ print $ "Games: " ++ show (length games)
   user <- currentUserName
   let newTask = Task "Evaluation" games dbName user
@@ -420,8 +419,8 @@ handleActiveTask m task = do
   return ()
   
 gamesInDB :: String -> Key Database -> Bool -> IO [Entity Game]
-gamesInDB dbName dbKey overwrite = TH.inBackend (connString dbName) $ do
-  let db = val dbKey
+gamesInDB dbName keyForDB overwrite = TH.inBackend (connString dbName) $ do
+  let db = val keyForDB
   evaluatedGames :: [Entity Game] <- select $ distinct $
     from $ \(g, me) -> do
       where_ $ (me ^. MoveEvalGameId ==. g^.GameId) &&. (g^.GameDatabaseId ==. db)
@@ -488,9 +487,9 @@ data MoveEvaluationRequest = MoveEvaluationRequest {
   moveEvalGames :: GameList
 } deriving (Show, Generic, FromJSON)
 
-getMoveEvaluationData :: MoveEvaluationRequest -> TH.DataAction [MoveEvaluationData]
-getMoveEvaluationData (MoveEvaluationRequest gl) = do
-  let gameIds = fmap intToKeyGame gl
+getMoveEvaluationData :: [Entity Game] -> TH.DataAction [MoveEvaluationData]
+getMoveEvaluationData gl = do
+  let gameIds = fmap entityKey gl
   results :: [(Entity Game, Entity MoveEval)] <- select $  
     from $ \(g, me) -> do
       where_ $ (me ^. MoveEvalGameId ==. g ^. GameId) &&. ((g ^. GameId) `in_` valList gameIds)
@@ -523,8 +522,10 @@ notAlreadyLosing dat = evalWithColor >= (-evalCutoff)
         evalNum = fromMaybe 0 $ moveEvalEvalBest eval
         evalWithColor = if wasWhite then evalNum else (- evalNum)
 
-moveEvaluationHandler :: MoveEvaluationRequest -> Handler b Service [MoveEvaluationData]
-moveEvaluationHandler mer = runPersist $ getMoveEvaluationData mer
+moveEvaluationHandler :: GameRequestData -> Handler b Service [MoveEvaluationData]
+moveEvaluationHandler grd = do
+  games <- getJustGames grd
+  runPersist $ getMoveEvaluationData games
 
 data MoveEvaluationData = MoveEvaluationData {
   moveEvalsGame :: Entity Game
@@ -570,18 +571,25 @@ data GameDataFormatted = GameDataFormatted {
   , gameDataPlayerBlack :: Entity Player
   , gameDataAttributes :: [Entity GameAttribute]} deriving (Generic, FromJSON, ToJSON)
 
-getGames :: GameRequestData -> Handler b Service [GameDataFormatted]
-getGames requestData = do
+
+getGamesHandler :: GameRequestData -> (GameRequestData -> SqlPersistM [a]) -> Handler b Service [a]
+getGamesHandler requestData getter = do
   usr <- currentUserName
-  let dbKey = intToKeyDB $ gameRequestDB requestData
-  db :: Maybe Database <- runPersist $ PsP.get dbKey
-  dbp :: Maybe (Entity DatabasePermission) <- runPersist $ PsP.getBy $ UniqueDatabasePermission dbKey (fromMaybe "" usr)
+  let keyForDB = intToKeyDB $ gameRequestDB requestData
+  db :: Maybe Database <- runPersist $ PsP.get keyForDB
+  dbp :: Maybe (Entity DatabasePermission) <- runPersist $ PsP.getBy $ UniqueDatabasePermission keyForDB (fromMaybe "" usr)
   let dbPublic = fmap databaseIsPublic db == Just True
   let userLoggedIn = isJust usr
   let userCanRead = isJust dbp && (fmap (databasePermissionRead . PsP.entityVal) dbp == Just True)
   if dbPublic || (userLoggedIn && userCanRead)
-    then fmap gameGrouper $ runPersist $ getGames' requestData
+    then runPersist $ getter requestData
     else return []
+
+getGames :: GameRequestData -> Handler b Service [GameDataFormatted]
+getGames requestData = fmap gameGrouper $ getGamesHandler requestData getGames'
+
+getJustGames :: GameRequestData -> Handler b Service [Entity Game]
+getJustGames requestData = getGamesHandler requestData getJustGames'
 
 groupSplitter :: [GameData] -> GameDataFormatted
 groupSplitter ((g, t, ov, pWhite, pBlack, ga) : rest) = GameDataFormatted g t ov pWhite pBlack allAttributes
@@ -594,10 +602,26 @@ gameDataEqual gd gd' = gameKey gd == gameKey gd'
 gameGrouper :: [GameData] -> [GameDataFormatted]
 gameGrouper allGames = groupSplitter <$> Data.List.groupBy gameDataEqual allGames
 
+getJustGames' :: MonadIO m => GameRequestData -> SqlPersistT m [Entity Game]
+getJustGames' (GameRequestData dbInt tournaments) = do
+  let db = intToKeyDB dbInt
+  let tournamentKeys = fmap intToKey tournaments
+  let tournamentMatch t = t ^. TournamentId `in_` valList tournamentKeys
+  select $ 
+    from $ \(g `InnerJoin` t `InnerJoin` pWhite `InnerJoin` pBlack `InnerJoin` ga `LeftOuterJoin` ov) -> do
+      on (g ^. GameOpeningVariation ==. ov ?. OpeningVariationId)
+      on (ga ^. GameAttributeGameId ==. g ^. GameId)
+      on (pBlack ^. PlayerId ==. g ^. GamePlayerBlackId) 
+      on (pWhite ^. PlayerId ==. g ^. GamePlayerWhiteId) 
+      on (g ^. GameTournament ==. t ^. TournamentId) 
+      where_ $ 
+            (g ^. GameDatabaseId ==. val db)
+        &&. (if not (null tournaments) then tournamentMatch t else not_ (tournamentMatch t))
+      return (g)
+  
 getGames' :: MonadIO m => GameRequestData -> SqlPersistT m [GameData]
-getGames' requestData = do
-  let db = intToKeyDB $ gameRequestDB requestData
-  let tournaments = gameRequestTournaments requestData
+getGames' (GameRequestData dbInt tournaments) = do
+  let db = intToKeyDB dbInt
   let tournamentKeys = fmap intToKey tournaments
   let tournamentMatch t = t ^. TournamentId `in_` valList tournamentKeys
   select $ 
@@ -612,14 +636,6 @@ getGames' requestData = do
         &&. (if not (null tournaments) then tournamentMatch t else not_ (tournamentMatch t))
       return (g, t, ov, pWhite, pBlack, ga)
 
-
-getGames2 :: Handler b Service [(Entity Game, Entity Tournament, Maybe (Entity OpeningVariation))]
-getGames2 = runPersist $ do
-  select $ 
-    from $ \(g `InnerJoin` t `LeftOuterJoin` ov) -> do
-      on (g ^. GameOpeningVariation ==. ov ?. OpeningVariationId)
-      on (g ^. GameTournament ==. t ^. TournamentId) 
-      return (g, t, ov)
 
 getResultPercentages :: DefaultSearchData -> Handler b Service [ResultPercentage]
 getResultPercentages searchData = do
