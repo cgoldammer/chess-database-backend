@@ -29,6 +29,7 @@ import Services.DatabaseHelpers as DatabaseHelpers
 
 import qualified Chess.Pgn.Logic as Pgn
 import qualified Chess.Logic as Logic
+import qualified Chess.Metrics as Metrics
 
 import qualified Chess.Board as Board
 import qualified Chess.Stockfish as Stockfish
@@ -89,6 +90,7 @@ fileSetsProd = [
   ("World Championships 1886-2014", "prod/world_champion"), 
   ("Candidates 2011-2018", "prod/candidates"), 
   ("Wijk An Zee (Tata Steel) 2012-2018", "prod/wijk"),
+  ("Rejkjavik Open 2018", "prod/rejkjavik"),
   ("Supertournaments 2017", "prod/super2017")]
 
 parseSet :: String -> String -> IO (String, [String])
@@ -240,3 +242,39 @@ evalMate (Left n) = Just n
 
 dbGameToPGN :: Game -> Maybe Pgn.Game
 dbGameToPGN game = rightToMaybe $ Logic.gameFromStart Pgn.pgnToMove $ Pgn.unsafeMoves $ Te.pack $ gamePgn game
+
+toPosAttribute :: Key Position -> Metrics.StatType -> Int -> PositionAttribute
+toPosAttribute pos stat val = PositionAttribute pos (fromEnum stat) val
+
+gsToPosHelper :: Logic.GameState -> DataAction [PositionAttribute]
+gsToPosHelper gs = do
+  pos <- insertBy $ Position $ Logic.gameStateToFen gs
+  return $ either (const []) (gsToPosAttributes gs) pos
+        
+gsToPosAttributes :: Logic.GameState -> Key Position -> [PositionAttribute]
+gsToPosAttributes gs pos = attributes
+  where attributes = fmap (uncurry (toPosAttribute pos)) stats
+        stats = (Metrics.gameStateData . Metrics.getStats) gs
+
+obtainGameAttributes :: Entity Game -> DataAction [[PositionAttribute]]
+obtainGameAttributes dbGame = do
+  let maybeGame = dbGameToPGN $ entityVal dbGame
+  maybe (return []) (\game -> mapM gsToPosHelper (Logic.gameStates game)) maybeGame
+
+storeGameAttributes :: Entity Game -> DataAction ()
+storeGameAttributes dbGame = do
+  attrs :: [[PositionAttribute]] <- obtainGameAttributes dbGame
+  mapM_ insertBy $ concat attrs
+
+storePositionAttribute :: PositionAttribute -> DataAction ()
+storePositionAttribute pa = insertBy pa >> return ()
+
+storeAtt :: Int -> DataAction ()
+storeAtt num = do
+  deleteWhere ([] :: [Filter PositionAttribute])
+  deleteWhere ([] :: [Filter Position])
+  games :: [Entity Game] <- selectList [] []
+  let g = take num games
+  mapM_ storeGameAttributes g
+
+inb = inBackend $ DatabaseHelpers.connString "prod"

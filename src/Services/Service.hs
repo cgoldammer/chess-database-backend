@@ -83,8 +83,8 @@ type ChessApi m =
   :<|> "players" :> Encoded DefaultSearchData :> Get '[JSON] [Entity Player]
   :<|> "tournaments" :> Encoded DefaultSearchData :> Get '[JSON] [Entity Tournament]
   :<|> "databases" :> Get '[JSON] [Entity Database]
-  :<|> "evalResults" :> Encoded MoveRequestData :> Get '[JSON] [EvalResult]
-  :<|> "moveSummary" :> Encoded MoveRequestData :> Get '[JSON] [MoveSummary]
+  :<|> "evalResults" :> Encoded GameRequestData :> Get '[JSON] [EvalResult]
+  :<|> "moveSummary" :> Encoded GameRequestData :> Get '[JSON] [MoveSummary]
   :<|> "dataSummary" :> Encoded DefaultSearchData :> Get '[JSON] DataSummary
   :<|> "resultPercentages" :> Encoded DefaultSearchData :> Get '[JSON] [ResultPercentage]
   :<|> "games" :> Encoded GameRequestData :> Get '[JSON] [GameDataFormatted]
@@ -299,21 +299,19 @@ getTournaments searchData = runPersist $ do
       where_ $ (g^.GameDatabaseId ==. db) &&. (t^.TournamentId ==. g^.GameTournament)
       return t
 
-evalData :: MoveRequestData -> Handler b Service ([Entity Player], [EvalResult])
-evalData mrData = do
-  let db = moveRequestDB mrData
-  let tournaments = moveRequestTournaments mrData
+evalData :: GameRequestData -> Handler b Service ([Entity Player], [EvalResult])
+evalData (GameRequestData db tournaments) = do
   let tournamentKeys = fmap intToKey tournaments
   players :: [Entity Player] <- getPlayers $ DefaultSearchData db
   evals <- getMoveEvals (intToKeyDB db) tournamentKeys
   return (players, evals)
 
-getEvalResults :: MoveRequestData -> Handler b Service [EvalResult]
+getEvalResults :: GameRequestData -> Handler b Service [EvalResult]
 getEvalResults = fmap snd . evalData
 
-getMoveSummary :: MoveRequestData -> Handler b Service [MoveSummary]
-getMoveSummary mrData = do
-  (playerKeys, evals) <- evalData mrData
+getMoveSummary :: GameRequestData -> Handler b Service [MoveSummary]
+getMoveSummary grData = do
+  (playerKeys, evals) <- evalData grData
   return $ summarizeEvals playerKeys evals
 
 selectEvalResults :: MonadIO m => Key Database -> [Key Tournament] -> SqlPersistT m [EvalResult]
@@ -333,11 +331,6 @@ printName = show
 
 gameRead :: Int -> String
 gameRead = show
-
-data MoveRequestData = MoveRequestData {
-  moveRequestDB :: Int
-, moveRequestTournaments :: [Int]
-} deriving (Generic, FromJSON, ToJSON, Show)
 
 type GameEvaluation = Int
 type GameOutcome = Int

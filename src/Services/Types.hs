@@ -52,6 +52,16 @@ GameAttribute json
   attribute String
   value String
 
+Position json
+  fen String
+  UniquePosition fen
+
+PositionAttribute json
+  positionId PositionId
+  typ Int
+  value Int
+  UniquePositionAttribute positionId typ
+
 MoveEval json
   gameId GameId
   moveNumber Int
