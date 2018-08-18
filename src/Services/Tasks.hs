@@ -19,7 +19,7 @@ type Tasks = [Task]
 data AllTasks = AllTasks { tasksScheduled :: Tasks, taskActive :: Maybe Task, tasksDone :: Tasks} deriving (Show)
 
 showTask :: Task -> String
-showTask (Task name games db taskUser) = "User: " ++ (show taskUser) ++ " db: " ++ db ++ " games: " ++ show (length games) ++ " name: " ++ name
+showTask (Task name games db taskUser) = "User: " ++ show taskUser ++ " db: " ++ db ++ " games: " ++ show (length games) ++ " name: " ++ name
 
 instance Show Task where
   show = showTask

@@ -4,9 +4,7 @@
 
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
-{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE DeriveGeneric     #-}
 {-# LANGUAGE DeriveAnyClass     #-}
 
 

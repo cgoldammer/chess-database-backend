@@ -6,6 +6,7 @@ import Prelude hiding (lookup)
 import Data.Attoparsec.Text (Parser, parseOnly, string, digit, char, letter, space, endOfLine, skipWhile, anyChar, manyTill)
 import Data.Attoparsec.Combinator (many', many1')
 import Database.Persist (insertBy, Key)
+import Database.Persist.Sql (Filter)
 
 import Services.Types
 import Data.Text (pack, unpack, Text, splitOn)
@@ -16,6 +17,7 @@ import Data.Foldable (fold)
 import Turtle (input, strict)
 import Filesystem.Path.CurrentOS (fromText)
 import Database.Esqueleto hiding (get)
+import qualified Data.List.Split as LS (splitOn)
 
 import qualified Chess.Logic as ChessLogic
 import qualified Chess.Pgn.Logic as Pgn
@@ -33,7 +35,8 @@ keyReader :: forall record. Either (Entity record) (Key record) -> Key record
 keyReader = either entityKey id
 
 data FullOpeningData = FullOpeningData {
-  opVariation :: Entity OpeningVariation
+  opMajor :: Entity OpeningLine
+, opVariation :: Entity OpeningVariation
 , opCode :: Entity OpeningCode
 }
 
@@ -45,29 +48,73 @@ parseOpenings :: Text -> [ListData]
 parseOpenings text = catMaybes $ fmap (rightToMaybe . parseOnly parseListData) split
   where split = splitOn "\r\n\r" text
 
+deleteOpenings :: DataAction ()
+deleteOpenings = do
+  deleteWhere ([] :: [Filter OpeningVariation])
+  deleteWhere ([] :: [Filter OpeningLine])
+  deleteWhere ([] :: [Filter OpeningCode])
+
 storeOpenings :: String -> IO ()
 storeOpenings dbName = do
   text :: Text <- strict $ input $ fromText $ pack "./data/openings.txt"
-  let storeIO dat = inBackend (connString dbName) $ tryStoreOpening dat
+  let actionRunner = inBackend (connString dbName) 
+  let storeIO dat = actionRunner $ tryStoreOpening dat
+  actionRunner deleteOpenings
   mapM_ storeIO $ parseOpenings text
 
 -- |Reads the opening data from the database and returns it as a `Map`
 -- that makes it easy to obtain the opening corresponding to a game.
 getOpeningData :: DataAction OpeningMap
 getOpeningData = do
-  variations :: [(Entity OpeningVariation, Entity OpeningCode)] <- select $ 
-    from $ \(v, c) -> do
-      where_ $ v^.OpeningVariationCode ==. c^.OpeningCodeId
-      return (v, c)
-  let list = [(openingVariationFen (entityVal v), FullOpeningData v c) | (v,c) <- variations]
+  variations :: [(Entity OpeningLine, Entity OpeningVariation, Entity OpeningCode)] <- select $ 
+    from $ \(l, v, c) -> do
+      where_ $ (v^.OpeningVariationCode ==. c^.OpeningCodeId) &&. (v^.OpeningVariationLine ==. l^.OpeningLineId)
+      return (l, v, c)
+  let list = [(openingVariationFen (entityVal v), FullOpeningData l v c) | (l, v,c) <- variations]
   return $ fromList list
   
+parseVariation :: String -> Maybe (String, String)
+parseVariation variationName = getVariation $ LS.splitOn ":" variationName
+        
+getVariation :: [String] -> Maybe (String, String)
+getVariation [] = Nothing
+getVariation [a] = Just (simplifyLine a, "")
+getVariation [a,b] = Just (simplifyLine a, b)
+getVariation _ = Nothing
+
+-- The original opening names involve duplicates (e.g.
+-- both Pirc Defense and Pirc). Removing those duplicates
+-- wherever I spot them.
+simplifyLine :: String -> String
+simplifyLine line = maybe line snd maybeReplaced
+  where maybeReplaced = listToMaybe $ filter ((==line) . fst) lineRenames
+
+lineRenames :: [(String, String)]
+lineRenames = [
+  ("Polish Opening", "Polish"),
+  ("Grob's Attack", "Grob"),
+  ("Reti Opening", "Reti"),
+  ("Old Indian Defense", "Old Indian"),
+  ("Old Benoni Defense", "Old Benoni"),
+  ("Czech Benoni Defense", "Czech Benoni"),
+  ("Scandinavian Defense", "Scandinavian"),
+  ("Pirc Defense", "Pirc"),
+  ("English Opening", "English"),
+  ("English Opening (e4)", "English"),
+  ("Budapest Defense Declined", "Budapest Defense"),
+  ("Sicilian Defense", "Sicilian")] 
 
 storeOpening :: String -> String -> String -> Pgn.PgnGame -> DataAction ()
 storeOpening code variationName standardMoves game = do
+  let line = parseVariation variationName
+  maybe (return ()) (uncurry (storeWithFullData code standardMoves game)) line
+
+storeWithFullData :: String -> String -> Pgn.PgnGame -> String -> String -> DataAction ()
+storeWithFullData code standardMoves game majorLine variation = do
+  lineKey :: Key OpeningLine <- keyReader <$> insertBy (OpeningLine majorLine)
   codeKey :: Key OpeningCode <- keyReader <$> insertBy (OpeningCode code)
   let fen = Fen.gameStateToFen $ last $ Pgn.gameStates $ Pgn.parsedPgnGame game
-  insertBy $ OpeningVariation variationName fen standardMoves codeKey
+  insertBy $ OpeningVariation variation fen standardMoves codeKey lineKey
   return ()
 
 tryStoreOpening :: ListData -> DataAction ()
@@ -120,3 +167,4 @@ openMoveParser = do
   let endPart = " 1" :: String
   let restCleaned = take (length rest - length endPart) rest
   return $ unpack start ++ restCleaned
+

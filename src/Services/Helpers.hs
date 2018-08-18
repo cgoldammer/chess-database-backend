@@ -22,9 +22,8 @@ import Database.Persist.Postgresql (Key, entityKey, entityVal, Entity, toSqlKey)
 import Data.Char (toLower)
 import Data.List (sortOn, groupBy)
 import Control.Monad (join)
-import Data.Maybe (fromJust, fromMaybe)
+import Data.Maybe (fromJust, fromMaybe, catMaybes)
 import Control.Lens ((^.), _1, _2, _3, to)
-import Data.Maybe (catMaybes)
 import qualified Data.List.Safe as Safe (head)
 
 import Services.StatsHelpers
@@ -77,7 +76,7 @@ averageByPlayer dataForAverage = fmap calculateStats evals
 aggregateEval :: Int -> [DataForMoveAverage] -> [(Int, Int)]
 aggregateEval maxLength dataForAverage = maybe [] (\r -> padEvals maxLength r (zip moves evals)) result
   where vals = fmap (\(_, isW, me) -> (isW, me)) dataForAverage -- [(IsWhite, MoveEval)]
-        result = fmap (^. _1) $ Safe.head dataForAverage
+        result = (^. _1) <$> Safe.head dataForAverage
         evals = fmap (uncurry evalAsIntWithColor) vals
         moves = fmap (^.(_2 . to moveEvalMoveNumber)) vals
 
@@ -121,7 +120,7 @@ evalAsInt me = max (- maxEval) (min maxEval eval)
 -- The `head` is safe here because it's only run on lists with at least one
 -- element. This still feels hacky, but at least it's safe.
 groupWithVal :: (Ord b) => (a -> b) -> [a] -> Map b [a]
-groupWithVal f x = fromList [(fst (head el), fmap snd el) | el <- grouped, length el >= 1]
+groupWithVal f x = fromList [(fst (head el), fmap snd el) | el <- grouped, not (null el)]
   where tuples = [(f val, val) | val <- sortOn f x]
         equal t t' = fst t == fst t'
         grouped = groupBy equal tuples -- [[(b, a)]]

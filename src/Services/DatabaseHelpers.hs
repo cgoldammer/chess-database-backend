@@ -57,9 +57,9 @@ addOpeningToGame openings entityGame = do
   let pgnGame = Pgn.readSingleGame $ Te.pack $ gamePgn $ entityVal entityGame
   either (const (return ())) (openingHelper openings key) pgnGame
 
-openingHelper :: OpeningMap -> (Key Game) -> Pgn.PgnGame -> DataAction ()
+openingHelper :: OpeningMap -> Key Game -> Pgn.PgnGame -> DataAction ()
 openingHelper openings key pgnGame = do
-  let game = (Pgn.parsedPgnGame pgnGame) :: Pgn.Game
+  let game = Pgn.parsedPgnGame pgnGame :: Pgn.Game
   let opening = entityKey . opVariation <$> getOpening openings game
   update key [GameOpeningVariation =. opening]
   return ()

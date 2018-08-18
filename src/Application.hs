@@ -24,8 +24,8 @@ import Data.Map (Map)
 import qualified Data.Map as Map (lookup)
 import Control.Monad.IO.Class (liftIO)
 import Debug.Trace (trace)
-import Control.Monad (join, liftM3)
-import Data.Maybe (listToMaybe)
+import Control.Monad (join, liftM3, when)
+import Data.Maybe (listToMaybe, fromMaybe)
 import Control.Monad.State.Class (get)
 
 import qualified Services.Service as S
@@ -74,9 +74,9 @@ loginRoutes = [
 writeLoginSuccess :: Handler b (AuthManager b) ()
 writeLoginSuccess = do
   user <- currentUser
-  let login = (fmap (T.unpack . userLogin) user) :: Maybe String
+  let login = fmap (T.unpack . userLogin) user :: Maybe String
   modifyResponse $ setResponseStatus 200 "Success"
-  writeBS $ B.pack $ maybe "" id login
+  writeBS $ B.pack $ fromMaybe "" login
 
 writeLoginFailure :: AuthFailure -> Handler b (AuthManager b) ()
 writeLoginFailure failure = do
@@ -129,7 +129,7 @@ handleNewUser = do
 -- but are automatically created from the corresponding heist templates.
 
 getProperty :: String -> Map B.ByteString [B.ByteString] -> Maybe T.Text
-getProperty name queryMap = fmap (T.pack . B.unpack) $ join $ fmap listToMaybe $ Map.lookup (B.pack name) queryMap
+getProperty name queryMap = fmap (T.pack . B.unpack) $ join $ listToMaybe <$> Map.lookup (B.pack name) queryMap
 
 resetWithUser :: T.Text -> Handler b (AuthManager b) ()
 resetWithUser login = do
@@ -143,25 +143,20 @@ resetWithUser login = do
   
   let newPass = getProperty "password" params
   
-  let resetter = (liftM3 (resetPassForUser manager)) token maybeUser newPass
-  maybe (return ()) id resetter
+  let resetter = liftM3 (resetPassForUser manager) token maybeUser newPass
+  fromMaybe (return ()) resetter
   clearPasswordResetToken login
   return ()
 
 resetPassForUser :: AuthManager b -> T.Text -> AuthUser -> T.Text -> Handler b (AuthManager b) ()
 resetPassForUser manager token user newPass = do
   let storedToken = userResetToken user
-  if storedToken == Just token
-    then
-      do
-        updatedUser <- liftIO $ setPassword user $ B.pack $ T.unpack $ newPass
-        liftIO $ save manager updatedUser
-        let login = userLogin user
-        clearPasswordResetToken login
-        redirect "/snap_prod/passwordchangegood"
-    else
-      do
-        return ()
+  when (storedToken == Just token) $ do
+    updatedUser <- liftIO $ setPassword user $ B.pack $ T.unpack newPass
+    liftIO $ save manager updatedUser
+    let login = userLogin user
+    clearPasswordResetToken login
+    redirect "/snap_prod/passwordchangegood"
   return ()
 
 resetPasswordHandler :: Handler b (AuthManager b) ()
@@ -176,7 +171,7 @@ sendPasswordResetHandler :: Handler b (AuthManager b) ()
 sendPasswordResetHandler = do
   request <- getRequest
   let params = rqParams request
-  let user = fmap T.unpack $ getProperty "email" params
+  let user = T.unpack <$> getProperty "email" params
   maybe (return ()) sendPasswordResetEmail user
 
   
@@ -188,7 +183,7 @@ sendPasswordResetEmail email = do
 sendEmailForToken :: String -> T.Text -> Handler b (AuthManager b) ()
 sendEmailForToken email token = do
   let url = "https://chessinsights.org/snap_prod/resetpassword?"
-  let fullUrl = url ++ "email=" ++ email ++ "&token=" ++ (T.unpack token)
+  let fullUrl = url ++ "email=" ++ email ++ "&token=" ++ T.unpack token
   let body = "Reset password link for chess insights \n " ++ fullUrl
   liftIO $ S.trySendEmail "Password reset for chessinsights.org" email body 
 

@@ -15,6 +15,7 @@ import Database.Persist.Sql
 import Data.Text as Te (Text, pack)
 import Data.Either (rights)
 import Control.Monad.Trans.Reader (ReaderT)
+import Control.Monad (void)
 import Control.Monad.Reader (MonadReader, MonadIO, runReaderT, reader, liftIO)
 import Data.Either.Combinators (rightToMaybe)
 import Text.RawString.QQ (r)
@@ -150,7 +151,7 @@ storeEvaluationIOHelper summaryFunction dbName dbGame = do
     (Just game) -> do
       summaries <- liftIO $ summaryFunction evalTime game
       liftIO $ inBackend (connString dbName) $ do
-        k <- traceShow ("IO" ++ (show summaries)) $ mapM insertBy $ evalToRow (entityKey dbGame) summaries
+        k <- traceShow ("IO" ++ show summaries) $ mapM insertBy $ evalToRow (entityKey dbGame) summaries
         return $ rights k
     Nothing ->
       return []
@@ -244,7 +245,7 @@ dbGameToPGN :: Game -> Maybe Pgn.Game
 dbGameToPGN game = rightToMaybe $ Logic.gameFromStart Pgn.pgnToMove $ Pgn.unsafeMoves $ Te.pack $ gamePgn game
 
 toPosAttribute :: Key Position -> Metrics.StatType -> Int -> PositionAttribute
-toPosAttribute pos stat val = PositionAttribute pos (fromEnum stat) val
+toPosAttribute pos stat = PositionAttribute pos (fromEnum stat)
 
 gsToPosHelper :: Logic.GameState -> DataAction [PositionAttribute]
 gsToPosHelper gs = do
@@ -259,7 +260,7 @@ gsToPosAttributes gs pos = attributes
 obtainGameAttributes :: Entity Game -> DataAction [[PositionAttribute]]
 obtainGameAttributes dbGame = do
   let maybeGame = dbGameToPGN $ entityVal dbGame
-  maybe (return []) (\game -> mapM gsToPosHelper (Logic.gameStates game)) maybeGame
+  maybe (return []) (mapM gsToPosHelper . Logic.gameStates) maybeGame
 
 storeGameAttributes :: Entity Game -> DataAction ()
 storeGameAttributes dbGame = do
@@ -267,7 +268,7 @@ storeGameAttributes dbGame = do
   mapM_ insertBy $ concat attrs
 
 storePositionAttribute :: PositionAttribute -> DataAction ()
-storePositionAttribute pa = insertBy pa >> return ()
+storePositionAttribute pa = void $ insertBy pa
 
 storeAtt :: Int -> DataAction ()
 storeAtt num = do
@@ -277,4 +278,5 @@ storeAtt num = do
   let g = take num games
   mapM_ storeGameAttributes g
 
-inb = inBackend $ DatabaseHelpers.connString "prod"
+inb :: String -> DataAction a -> IO a
+inb name = inBackend $ DatabaseHelpers.connString name

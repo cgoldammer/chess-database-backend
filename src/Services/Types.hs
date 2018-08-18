@@ -98,11 +98,16 @@ OpeningCode json
   code String
   UniqueOpeningCode code
 
+OpeningLine json
+  name String
+  UniqueOpeningLine name
+
 OpeningVariation json
   variationName String
   fen String
   standardMoves String
   code OpeningCodeId
+  line OpeningLineId
   UniqueOpeningName fen
   
 TestThing json
@@ -127,4 +132,3 @@ instance {-# Overlaps #-} Eq (Entity Game)
 instance {-# Overlaps #-} Ord (Entity Game) where
   g >= g' = entityKey g >= entityKey g'
   g <= g' = entityKey g <= entityKey g'
-

@@ -21,7 +21,7 @@ import GHC.Generics (Generic)
 import Control.Lens (makeLenses, _1)
 import qualified Control.Lens as Lens ((^.))
 import Control.Monad.State.Class (get, gets)
-import Data.Aeson (FromJSON, ToJSON)
+import Data.Aeson (FromJSON, ToJSON, eitherDecode, encode)
 import Snap.Core (modifyResponse, setResponseStatus)
 import Snap.Snaplet (Snaplet, MonadSnaplet, SnapletInit, Handler, with, getSnapletUserConfig, makeSnaplet, nestSnaplet, addRoutes)
 import Snap.Snaplet.PostgresqlSimple (Postgres, HasPostgres, getPostgresState, setLocalPostgresState, pgsInit)
@@ -63,8 +63,6 @@ import qualified Test.Fixtures as TF
 import qualified Test.Helpers as TH
 import Services.Sql
 
-
-import Data.Aeson
 import Data.Text.Encoding
 import qualified Data.ByteString.Lazy as LBS
 
@@ -173,14 +171,12 @@ instance (ToJSON a) => ToHttpApiData (JSONEncoded a) where
 -- creates the required handler from h and returning the monoid `mempty` if
 -- the query could not get parsed
 maybeHandler :: HasDefault d => (a -> Handler b Service d) -> Maybe (JSONEncoded a) -> Handler b Service d
-maybeHandler h getData = do
-  maybe (return defaultVal) (\enc -> h (unJSONEncoded enc)) getData
+maybeHandler h = maybe (return defaultVal) (h . unJSONEncoded)
 
 data TestData = TestData { testInt :: Int, testNames :: [String] } deriving (Show, Generic, FromJSON, ToJSON)
 
 testCall' :: TestData -> Handler b Service [Int]
-testCall' td = do
-  return $ testInt td : fmap length (testNames td)
+testCall' td = return $ testInt td : fmap length (testNames td)
 
 serviceInit :: String -> SnapletInit b Service
 serviceInit dbName = makeSnaplet "chess" "Chess Service" Nothing $ do
@@ -235,7 +231,7 @@ data DataSummary = DataSummary {
 class HasDefault a where
   defaultVal :: a 
 
-instance HasDefault ([a]) where
+instance HasDefault [a] where
   defaultVal = []
 
 instance HasDefault DataSummary where
@@ -374,7 +370,7 @@ addEvaluations request = do
   m <- gets _serviceAllTasks
   tasks <- liftIO $ takeMVar m
   let afterTasks = addTask tasks newTask
-  liftIO $ putMVar m $ afterTasks
+  liftIO $ putMVar m afterTasks
   -- store the evaluations to file so I know what's currently running
   liftIO $ writeFile "/home/cg/chess-backend/log/tasks.log" $ show afterTasks
   return ()
@@ -384,8 +380,7 @@ doNothing :: IO ()
 doNothing = return ()
 
 runTask :: Task -> IO ()
-runTask (Task _ games dbName _) = do
-  sequenceA (fmap (TF.storeEvaluationIO dbName) games) >> doNothing
+runTask (Task _ games dbName _) = sequenceA (fmap (TF.storeEvaluationIO dbName) games) >> doNothing
 
 -- The thread handler to run evaluations. The idea here is that
 -- we want to be able to asynchronously add evaluation tasks as they come
@@ -454,7 +449,7 @@ uploadDB :: UploadData -> Handler b Service UploadResult
 uploadDB upload = do
   let (name, text) = (uploadName upload, uploadText upload)
   let textLength = T.length text
-  let maxTextLength = 200 * 1024
+  let maxTextLength = 1000 * 1024
   if textLength > maxTextLength
     then do
       modifyResponse $ setResponseStatus 403 "Data too big"
@@ -529,24 +524,24 @@ data MoveEvaluationData = MoveEvaluationData {
 data MoveLoss = MoveLossCP Int | MoveLossMate Int deriving (Show, Generic, ToJSON)
 
 getEvalData :: [(Entity Game, Entity MoveEval)] -> [MoveEvaluationData]
-getEvalData dat = concat $ [evalGame game evals | (game, evals) <- grouped]
-  where grouped = toList $ (fmap . fmap) snd $ groupWithVal fst dat :: [(Entity Game, [Entity MoveEval])]
+getEvalData dat = concat [evalGame game evals | (game, evals) <- grouped]
+  where grouped = toList $ fmap snd <$> groupWithVal fst dat :: [(Entity Game, [Entity MoveEval])]
 
 evalGame :: Entity Game -> [Entity MoveEval] -> [MoveEvaluationData]
-evalGame g moveEvals = fmap (evalHelper g) moveEvals
+evalGame = fmap . evalHelper
 
 evalHelper :: Entity Game -> Entity MoveEval -> MoveEvaluationData
 evalHelper ga meEntity = MoveEvaluationData ga me $ getMoveLoss me
   where me = entityVal meEntity
 
 getMoveLoss :: MoveEval -> MoveLoss
-getMoveLoss (MoveEval _ _ isWhite movePlayed moveBest evalAfter evalBefore mateAfter mateBefore _) = if bestMovePlayed then (MoveLossCP) 0 else moveLossBasic
+getMoveLoss (MoveEval _ _ isWhite movePlayed moveBest evalAfter evalBefore mateAfter mateBefore _) = if bestMovePlayed then MoveLossCP 0 else moveLossBasic
   where moveLossBasic = getMoveLossHelper isWhite evalBefore evalAfter mateBefore mateAfter
         bestMovePlayed = movePlayed == Just moveBest
 
 getMoveLossHelper :: Bool -> Maybe Int -> Maybe Int -> Maybe Int -> Maybe Int -> MoveLoss
-getMoveLossHelper True (Just before) (Just after) _ _ = MoveLossCP $ (before - after)
-getMoveLossHelper False (Just before) (Just after) _ _ = MoveLossCP $ (after - before)
+getMoveLossHelper True (Just before) (Just after) _ _ = MoveLossCP $ before - after
+getMoveLossHelper False (Just before) (Just after) _ _ = MoveLossCP $ after - before
 getMoveLossHelper _ _ _ (Just _) (Just _) = MoveLossCP 0
 getMoveLossHelper _ _ (Just _) (Just before) _ = MoveLossMate (-before)
 getMoveLossHelper _ _ _ _ _= MoveLossCP 0
@@ -554,16 +549,16 @@ getMoveLossHelper _ _ _ _ _= MoveLossCP 0
 getMyUser :: Handler b Service (Maybe AppUser)
 getMyUser = currentUserName >>= runPersist . selectUser . fmap T.pack 
 
-type GameData = (Entity Game, Entity Tournament, Maybe (Entity OpeningVariation), Entity Player, Entity Player, Entity GameAttribute)
+type GameData = (Entity Game, Entity Tournament, Maybe (Entity OpeningVariation), Maybe (Entity OpeningLine), Entity Player, Entity Player, Entity GameAttribute)
 
 data GameDataFormatted = GameDataFormatted {
     gameDataGame :: Entity Game
   , gameDataTournament :: Entity Tournament
   , gameDataOpening :: Maybe (Entity OpeningVariation)
+  , gameDataOpeningLine :: Maybe (Entity OpeningLine)
   , gameDataPlayerWhite :: Entity Player
   , gameDataPlayerBlack :: Entity Player
   , gameDataAttributes :: [Entity GameAttribute]} deriving (Generic, FromJSON, ToJSON)
-
 
 getGamesHandler :: GameRequestData -> (GameRequestData -> SqlPersistM [a]) -> Handler b Service [a]
 getGamesHandler requestData getter = do
@@ -579,14 +574,15 @@ getGamesHandler requestData getter = do
     else return []
 
 getGames :: GameRequestData -> Handler b Service [GameDataFormatted]
-getGames requestData = fmap gameGrouper $ getGamesHandler requestData getGames'
+getGames requestData = gameGrouper <$> getGamesHandler requestData getGames'
 
 getJustGames :: GameRequestData -> Handler b Service [Entity Game]
 getJustGames requestData = getGamesHandler requestData getJustGames'
 
 groupSplitter :: [GameData] -> GameDataFormatted
-groupSplitter ((g, t, ov, pWhite, pBlack, ga) : rest) = GameDataFormatted g t ov pWhite pBlack allAttributes
-  where allAttributes = ga : fmap (\(_, _, _, _, _, gat) -> gat) rest
+groupSplitter ((g, t, ov, ol, pWhite, pBlack, ga) : rest) = GameDataFormatted g t ov ol pWhite pBlack allAttributes
+  where allAttributes = ga : restAttributes
+        restAttributes = fmap (\(_,_,_,_,_,_,r) -> r) rest :: [Entity GameAttribute]
 
 gameDataEqual :: GameData -> GameData -> Bool
 gameDataEqual gd gd' = gameKey gd == gameKey gd'
@@ -596,21 +592,7 @@ gameGrouper :: [GameData] -> [GameDataFormatted]
 gameGrouper allGames = groupSplitter <$> Data.List.groupBy gameDataEqual allGames
 
 getJustGames' :: MonadIO m => GameRequestData -> SqlPersistT m [Entity Game]
-getJustGames' (GameRequestData dbInt tournaments) = do
-  let db = intToKeyDB dbInt
-  let tournamentKeys = fmap intToKey tournaments
-  let tournamentMatch t = t ^. TournamentId `in_` valList tournamentKeys
-  select $ 
-    from $ \(g `InnerJoin` t `InnerJoin` pWhite `InnerJoin` pBlack `InnerJoin` ga `LeftOuterJoin` ov) -> do
-      on (g ^. GameOpeningVariation ==. ov ?. OpeningVariationId)
-      on (ga ^. GameAttributeGameId ==. g ^. GameId)
-      on (pBlack ^. PlayerId ==. g ^. GamePlayerBlackId) 
-      on (pWhite ^. PlayerId ==. g ^. GamePlayerWhiteId) 
-      on (g ^. GameTournament ==. t ^. TournamentId) 
-      where_ $ 
-            (g ^. GameDatabaseId ==. val db)
-        &&. (if not (null tournaments) then tournamentMatch t else not_ (tournamentMatch t))
-      return (g)
+getJustGames' gr = fmap (Lens.^. _1) <$> getGames' gr
   
 getGames' :: MonadIO m => GameRequestData -> SqlPersistT m [GameData]
 getGames' (GameRequestData dbInt tournaments) = do
@@ -618,7 +600,8 @@ getGames' (GameRequestData dbInt tournaments) = do
   let tournamentKeys = fmap intToKey tournaments
   let tournamentMatch t = t ^. TournamentId `in_` valList tournamentKeys
   select $ 
-    from $ \(g `InnerJoin` t `InnerJoin` pWhite `InnerJoin` pBlack `InnerJoin` ga `LeftOuterJoin` ov) -> do
+    from $ \(g `InnerJoin` t `InnerJoin` pWhite `InnerJoin` pBlack `InnerJoin` ga `LeftOuterJoin` ov `LeftOuterJoin` ol) -> do
+      on (ov ?. OpeningVariationLine ==. ol ?. OpeningLineId)
       on (g ^. GameOpeningVariation ==. ov ?. OpeningVariationId)
       on (ga ^. GameAttributeGameId ==. g ^. GameId)
       on (pBlack ^. PlayerId ==. g ^. GamePlayerBlackId) 
@@ -627,7 +610,7 @@ getGames' (GameRequestData dbInt tournaments) = do
       where_ $ 
             (g ^. GameDatabaseId ==. val db)
         &&. (if not (null tournaments) then tournamentMatch t else not_ (tournamentMatch t))
-      return (g, t, ov, pWhite, pBlack, ga)
+      return (g, t, ov, ol, pWhite, pBlack, ga)
 
 
 getResultPercentages :: DefaultSearchData -> Handler b Service [ResultPercentage]
