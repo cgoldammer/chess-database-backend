@@ -5,17 +5,17 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE DeriveAnyClass     #-}
+{-# LANGUAGE DeriveAnyClass #-}
 
 
 module Services.Sql where
 
+import Data.Maybe (fromMaybe)
 import qualified Data.Text as T (Text, pack, unpack)
 import qualified Data.Text.Lazy as TL (toStrict)
-import Text.RawString.QQ (r)
 import Data.Text.Template (Context, substitute)
 import Services.DatabaseHelpers (listToInClause)
-import Data.Maybe (fromMaybe)
+import Text.RawString.QQ (r)
 
 
 type GameList = [Int]
@@ -67,7 +67,8 @@ CROSS JOIN numberMoveEvals
 -- In pseudo-code, the evaluation of a move is max(eval - lag(eval, 1), 0) if the player that moves 
 -- had the white pieces and the inverse of that if the player was playing with the  black pieces.
 viewQuery :: T.Text
-viewQuery = [r|
+viewQuery =
+  [r|
 CREATE OR REPLACE VIEW moveevals as (
   SELECT 
     game_id
@@ -126,4 +127,3 @@ FROM (
 ) values
 GROUP BY rating_own, rating_opponent, eval
 |]
-

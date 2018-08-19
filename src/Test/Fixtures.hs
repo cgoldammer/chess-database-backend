@@ -1,32 +1,32 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE FlexibleContexts           #-}
-{-# LANGUAGE GADTs                      #-}
-{-# LANGUAGE MultiParamTypeClasses      #-}
-{-# LANGUAGE QuasiQuotes                #-}
-{-# LANGUAGE TypeFamilies               #-}
-{-# LANGUAGE ScopedTypeVariables        #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE QuasiQuotes #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Test.Fixtures where
 
-import Debug.Trace (traceShow)
-import Database.Persist (Key, insertBy)
-import Database.Persist.Sql 
-import Data.Text as Te (Text, pack)
-import Data.Either (rights)
-import Control.Monad.Trans.Reader (ReaderT)
 import Control.Monad (void)
-import Control.Monad.Reader (MonadReader, MonadIO, runReaderT, reader, liftIO)
+import Control.Monad.Reader (MonadIO, MonadReader, liftIO, reader, runReaderT)
+import Control.Monad.Trans.Reader (ReaderT)
+import Data.Either (rights)
 import Data.Either.Combinators (rightToMaybe)
-import Text.RawString.QQ (r)
+import Data.Text as Te (Text, pack)
+import Database.Persist (Key, insertBy)
+import Database.Persist.Sql
+import Debug.Trace (traceShow)
 import qualified Filesystem.Path.CurrentOS as FS (fromText)
-import qualified Turtle as Tu (strict, input)
 import System.Directory (listDirectory)
+import Text.RawString.QQ (r)
+import qualified Turtle as Tu (input, strict)
 
 import AppTypes
+import Services.DatabaseHelpers as DatabaseHelpers
 import Services.Types
 import Test.Helpers as Helpers
-import Services.DatabaseHelpers as DatabaseHelpers
 
 import qualified Chess.Pgn.Logic as Pgn
 import qualified Chess.Logic as Logic
@@ -44,11 +44,11 @@ import qualified Chess.Stockfish as Stockfish
 -- before data is read in.
 -- By default, data is not overwritten. If the program is stopped in the middle of inserting data
 -- then running it again should simply continue the data insertion.
---
-data FixtureSettings = FixtureSettings { 
-    settingsDBName :: String
+data FixtureSettings = FixtureSettings
+  { settingsDBName :: String
   , settingsRunEval :: Bool
-  , settingsOnlyContinueEval :: Bool} deriving (Show)
+  , settingsOnlyContinueEval :: Bool
+  } deriving (Show)
 
 type OnlyContinue = Bool
 
@@ -87,12 +87,13 @@ getFolderPgns folder = do
   return [folder ++ "/" ++ name | name <- files]
 
 fileSetsProd :: [(String, String)]
-fileSetsProd = [
-  ("World Championships 1886-2014", "prod/world_champion"), 
-  ("Candidates 2011-2018", "prod/candidates"), 
-  ("Wijk An Zee (Tata Steel) 2012-2018", "prod/wijk"),
-  ("Rejkjavik Open 2018", "prod/rejkjavik"),
-  ("Supertournaments 2017", "prod/super2017")]
+fileSetsProd =
+  [ ("World Championships 1886-2014", "prod/world_champion")
+  , ("Candidates 2011-2018", "prod/candidates")
+  , ("Wijk An Zee (Tata Steel) 2012-2018", "prod/wijk")
+  , ("Rejkjavik Open 2018", "prod/rejkjavik")
+  , ("Supertournaments 2017", "prod/super2017")
+  ]
 
 parseSet :: String -> String -> IO (String, [String])
 parseSet name folder = do
@@ -118,7 +119,8 @@ storeFile dbName chessDBName fileName = do
   DatabaseHelpers.readTextIntoDB dbName chessDBName fileText True
   return ()
 
-storeFilesIntoDB :: (MonadReader FixtureSettings m, MonadIO m) => (String, [String]) -> m ()
+storeFilesIntoDB ::
+     (MonadReader FixtureSettings m, MonadIO m) => (String, [String]) -> m ()
 storeFilesIntoDB (chessDBName, fileNames) = do
   dbName <- reader settingsDBName
   liftIO $ inBackend (connString dbName) $ mapM_ (storeFile dbName chessDBName) fileNames
@@ -136,25 +138,29 @@ evaluateGames = do
   return ()
 
 
-doEvaluation :: (MonadReader FixtureSettings m, MonadIO m) => Entity Game -> m [Key MoveEval]
+doEvaluation ::
+     (MonadReader FixtureSettings m, MonadIO m) => Entity Game -> m [Key MoveEval]
 doEvaluation dbGame = do
   dbName <- reader settingsDBName
   storeEvaluationIO dbName dbGame
 
 type SummaryFunction = Int -> Logic.Game -> IO [Pgn.MoveSummary]
 
-storeEvaluationIOHelper :: MonadIO m => SummaryFunction -> String -> Entity Game -> m [Key MoveEval]
+storeEvaluationIOHelper ::
+     MonadIO m => SummaryFunction -> String -> Entity Game -> m [Key MoveEval]
 storeEvaluationIOHelper summaryFunction dbName dbGame = do
   let maybeGame = dbGameToPGN $ entityVal dbGame
   let evalTime = 100
-  case maybeGame of 
+  case maybeGame of
     (Just game) -> do
       summaries <- liftIO $ summaryFunction evalTime game
-      liftIO $ inBackend (connString dbName) $ do
-        k <- traceShow ("IO" ++ show summaries) $ mapM insertBy $ evalToRow (entityKey dbGame) summaries
-        return $ rights k
-    Nothing ->
-      return []
+      liftIO $
+        inBackend (connString dbName) $ do
+          k <-
+            traceShow ("IO" ++ show summaries) $
+            mapM insertBy $ evalToRow (entityKey dbGame) summaries
+          return $ rights k
+    Nothing -> return []
 
 storeEvaluationIO :: MonadIO m => String -> Entity Game -> m [Key MoveEval]
 storeEvaluationIO = storeEvaluationIOHelper Pgn.gameSummaries
@@ -225,13 +231,17 @@ evalToRow g ms = traceShow ("Move summary" ++ show ms) $ evalToRowColor g 1 Boar
 
 evalToRowColor :: Key Game -> Int -> Board.Color -> [Pgn.MoveSummary] -> [MoveEval]
 evalToRowColor _ _ _ [] = []
-evalToRowColor g n Board.White (ms : rest) = constructEvalMove g n True ms : evalToRowColor g n Board.Black rest
-evalToRowColor g n Board.Black (ms : rest) = constructEvalMove g n False ms : evalToRowColor g (n + 1) Board.White rest
+evalToRowColor g n Board.White (ms:rest) =
+  constructEvalMove g n True ms : evalToRowColor g n Board.Black rest
+evalToRowColor g n Board.Black (ms:rest) =
+  constructEvalMove g n False ms : evalToRowColor g (n + 1) Board.White rest
 
 constructEvalMove :: Key Game -> Int -> Bool -> Pgn.MoveSummary -> MoveEval
-constructEvalMove gm n isWhite (Pgn.MoveSummary mv mvBest evalMove evalBest fen) = MoveEval gm n isWhite (Just mv) mvBest eval evalB mate mateB fen
-  where (eval, mate) = (evalInt evalMove, evalMate evalMove)
-        (evalB, mateB) = (evalInt evalBest, evalMate evalBest)
+constructEvalMove gm n isWhite (Pgn.MoveSummary mv mvBest evalMove evalBest fen) =
+  MoveEval gm n isWhite (Just mv) mvBest eval evalB mate mateB fen
+  where
+    (eval, mate) = (evalInt evalMove, evalMate evalMove)
+    (evalB, mateB) = (evalInt evalBest, evalMate evalBest)
 
 evalInt :: Stockfish.Evaluation -> Maybe Int 
 evalInt (Right n) = Just n
@@ -242,7 +252,9 @@ evalMate (Right _) = Nothing
 evalMate (Left n) = Just n
 
 dbGameToPGN :: Game -> Maybe Pgn.Game
-dbGameToPGN game = rightToMaybe $ Logic.gameFromStart Pgn.pgnToMove $ Pgn.unsafeMoves $ Te.pack $ gamePgn game
+dbGameToPGN game =
+  rightToMaybe $
+  Logic.gameFromStart Pgn.pgnToMove $ Pgn.unsafeMoves $ Te.pack $ gamePgn game
 
 toPosAttribute :: Key Position -> Metrics.StatType -> Int -> PositionAttribute
 toPosAttribute pos stat = PositionAttribute pos (fromEnum stat)

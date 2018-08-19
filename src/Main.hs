@@ -1,23 +1,25 @@
-{-# LANGUAGE OverloadedStrings, ScopedTypeVariables #-}
+{-# LANGUAGE OverloadedStrings   #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+
 module Main where
 
-import Data.Maybe
 import Control.Comonad
-import qualified Data.ByteString.Char8 as B
-import           Data.IORef
-import Snap.Snaplet.PostgresqlSimple
-import           Control.Monad.State
 import Control.Lens (view)
-import qualified Services.Service as S
-import Data.Either
-import           Snap.Snaplet.Config
-import           Snap.Http.Server
-import           Snap.Snaplet
-import System.Environment (lookupEnv)
 import Control.Monad.IO.Class (liftIO)
+import Control.Monad.State
+import qualified Data.ByteString.Char8 as B
+import Data.Either
+import Data.IORef
+import Data.Maybe
+import qualified Services.Service as S
+import Snap.Http.Server
+import Snap.Snaplet
+import Snap.Snaplet.Config
+import Snap.Snaplet.PostgresqlSimple
+import System.Environment (lookupEnv)
 
 import AppTypes
-import Application 
+import Application
 
 readSettings :: IO Settings
 readSettings = do
@@ -31,4 +33,3 @@ main = do
   print settings
   let config = setPort (appPort settings) defaultConfig
   serveSnaplet config $ app settings
-

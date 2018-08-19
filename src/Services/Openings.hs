@@ -1,29 +1,43 @@
-{-# LANGUAGE OverloadedStrings, ScopedTypeVariables, TypeFamilies #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeFamilies #-}
 
 module Services.Openings where
 
-import Prelude hiding (lookup)
-import Data.Attoparsec.Text (Parser, parseOnly, string, digit, char, letter, space, endOfLine, skipWhile, anyChar, manyTill)
 import Data.Attoparsec.Combinator (many', many1')
-import Database.Persist (insertBy, Key)
+import Data.Attoparsec.Text
+  ( Parser
+  , anyChar
+  , char
+  , digit
+  , endOfLine
+  , letter
+  , manyTill
+  , parseOnly
+  , skipWhile
+  , space
+  , string
+  )
+import Database.Persist (Key, insertBy)
 import Database.Persist.Sql (Filter)
+import Prelude hiding (lookup)
 
-import Services.Types
-import Data.Text (pack, unpack, Text, splitOn)
-import Data.Map (lookup, Map, fromList)
-import Data.Maybe (listToMaybe, catMaybes)
 import Data.Either.Combinators (rightToMaybe)
 import Data.Foldable (fold)
-import Turtle (input, strict)
-import Filesystem.Path.CurrentOS (fromText)
-import Database.Esqueleto hiding (get)
 import qualified Data.List.Split as LS (splitOn)
+import Data.Map (Map, fromList, lookup)
+import Data.Maybe (catMaybes, listToMaybe)
+import Data.Text (Text, pack, splitOn, unpack)
+import Database.Esqueleto hiding (get)
+import Filesystem.Path.CurrentOS (fromText)
+import Services.Types
+import Turtle (input, strict)
 
+import qualified Chess.Fen as Fen
 import qualified Chess.Logic as ChessLogic
 import qualified Chess.Pgn.Logic as Pgn
-import qualified Chess.Fen as Fen
-import Test.Helpers
 import Debug.Trace (trace)
+import Test.Helpers
 
 -- Todo: Remove this duplication
 connString :: String -> String
@@ -66,11 +80,17 @@ storeOpenings dbName = do
 -- that makes it easy to obtain the opening corresponding to a game.
 getOpeningData :: DataAction OpeningMap
 getOpeningData = do
-  variations :: [(Entity OpeningLine, Entity OpeningVariation, Entity OpeningCode)] <- select $ 
+  variations :: [(Entity OpeningLine, Entity OpeningVariation, Entity OpeningCode)] <-
+    select $
     from $ \(l, v, c) -> do
-      where_ $ (v^.OpeningVariationCode ==. c^.OpeningCodeId) &&. (v^.OpeningVariationLine ==. l^.OpeningLineId)
+      where_ $
+        (v ^. OpeningVariationCode ==. c ^. OpeningCodeId) &&.
+        (v ^. OpeningVariationLine ==. l ^. OpeningLineId)
       return (l, v, c)
-  let list = [(openingVariationFen (entityVal v), FullOpeningData l v c) | (l, v,c) <- variations]
+  let list =
+        [ (openingVariationFen (entityVal v), FullOpeningData l v c)
+        | (l, v, c) <- variations
+        ]
   return $ fromList list
   
 parseVariation :: String -> Maybe (String, String)
@@ -90,19 +110,20 @@ simplifyLine line = maybe line snd maybeReplaced
   where maybeReplaced = listToMaybe $ filter ((==line) . fst) lineRenames
 
 lineRenames :: [(String, String)]
-lineRenames = [
-  ("Polish Opening", "Polish"),
-  ("Grob's Attack", "Grob"),
-  ("Reti Opening", "Reti"),
-  ("Old Indian Defense", "Old Indian"),
-  ("Old Benoni Defense", "Old Benoni"),
-  ("Czech Benoni Defense", "Czech Benoni"),
-  ("Scandinavian Defense", "Scandinavian"),
-  ("Pirc Defense", "Pirc"),
-  ("English Opening", "English"),
-  ("English Opening (e4)", "English"),
-  ("Budapest Defense Declined", "Budapest Defense"),
-  ("Sicilian Defense", "Sicilian")] 
+lineRenames =
+  [ ("Polish Opening", "Polish")
+  , ("Grob's Attack", "Grob")
+  , ("Reti Opening", "Reti")
+  , ("Old Indian Defense", "Old Indian")
+  , ("Old Benoni Defense", "Old Benoni")
+  , ("Czech Benoni Defense", "Czech Benoni")
+  , ("Scandinavian Defense", "Scandinavian")
+  , ("Pirc Defense", "Pirc")
+  , ("English Opening", "English")
+  , ("English Opening (e4)", "English")
+  , ("Budapest Defense Declined", "Budapest Defense")
+  , ("Sicilian Defense", "Sicilian")
+  ]
 
 storeOpening :: String -> String -> String -> Pgn.PgnGame -> DataAction ()
 storeOpening code variationName standardMoves game = do
@@ -124,19 +145,18 @@ tryStoreOpening (ListData code variationName standardMoves) = do
 
 getOpening :: OpeningMap -> ChessLogic.Game -> Maybe FullOpeningData
 getOpening mp game = listToMaybe $ catMaybes sortedMatches
-  where sortedMatches = reverse $ flip lookup mp <$> initialFens :: [Maybe FullOpeningData]
+  where sortedMatches = reverse $ flip lookup mp <$> initialFens
         initialFens = take 10 $ Fen.gameStateToFen <$> Pgn.gameStates game
-
 
 type OpenName = String
 type CodeName = String
 type OpenMoves = String
 
-data ListData = ListData {
-  openCode :: CodeName
-, openName :: OpenName
-, openMoves :: OpenMoves
-} deriving (Eq, Show)
+data ListData = ListData
+  { openCode :: CodeName
+  , openName :: OpenName
+  , openMoves :: OpenMoves
+  } deriving (Eq, Show)
 
 parseListData :: Parser ListData
 parseListData = do
@@ -152,7 +172,7 @@ openingNameParser :: Parser String
 openingNameParser = do
   name <- many1' $ fold $ [letter, digit] ++ fmap char (" /-:()\'" ++ ['.', '/'])
   many' $ char ';'
-  skipWhile (\c -> c `notElem` ("\n\r"::String))
+  skipWhile (\c -> c `notElem` ("\n\r" :: String))
   return name
 
 openingCodeParser :: Parser CodeName
@@ -161,10 +181,8 @@ openingCodeParser = many1' $ fold $ digit : fmap char (['A'..'E'] ++ ['/'])
 openMoveParser :: Parser OpenMoves
 openMoveParser = do
   start :: Text <- string "1."
-  -- rest :: String <- many1' $ fold $ [letter, digit] ++ fmap char (" .#x+=O-/ ")
   rest :: String <- manyTill anyChar (char '/')
   many' endOfLine
   let endPart = " 1" :: String
   let restCleaned = take (length rest - length endPart) rest
   return $ unpack start ++ restCleaned
-

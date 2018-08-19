@@ -5,25 +5,36 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE DataKinds         #-}
-{-# LANGUAGE DeriveAnyClass     #-}
-{-# LANGUAGE PolyKinds         #-}
-{-# LANGUAGE TypeOperators     #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE PolyKinds #-}
+{-# LANGUAGE TypeOperators #-}
 
 module Services.DatabaseHelpers where
 
-import Database.Persist (selectList, Entity, insertBy, insert, Key, entityVal, entityKey, update, (=.), (==.))
-import Database.Persist.Postgresql (transactionSave)
-import Data.Time (Day, fromGregorian)
-import qualified Data.Text as Te (pack, Text)
-import Data.Maybe (isJust, fromJust, listToMaybe)
+import Control.Monad.Reader (MonadIO, join, liftIO)
+import Data.Attoparsec.Text (Parser, char, digit, many', parseOnly)
 import Data.Either (rights)
-import Control.Monad.Reader (MonadIO, liftIO, join)
 import Data.Either.Combinators (rightToMaybe)
-import Debug.Trace (trace)
-import Data.Attoparsec.Text (parseOnly, many', Parser, digit, char)
-import qualified Turtle as Tu (Text)
 import Data.List (intercalate)
+import Data.Maybe (fromJust, isJust, listToMaybe)
+import qualified Data.Text as Te (Text, pack)
+import Data.Time (Day, fromGregorian)
+import Database.Persist
+  ( Entity
+  , Key
+  , (=.)
+  , (==.)
+  , entityKey
+  , entityVal
+  , insert
+  , insertBy
+  , selectList
+  , update
+  )
+import Database.Persist.Postgresql (transactionSave)
+import Debug.Trace (trace)
+import qualified Turtle as Tu (Text)
 
 import qualified Chess.Pgn.Logic as Pgn
 import qualified Chess.Helpers as Helpers
@@ -64,14 +75,15 @@ openingHelper openings key pgnGame = do
   update key [GameOpeningVariation =. opening]
   return ()
 
-storeGameIntoDB :: Key Database -> OpeningMap -> Pgn.PgnGame -> DataAction (Maybe (Key Game))
+storeGameIntoDB ::
+     Key Database -> OpeningMap -> Pgn.PgnGame -> DataAction (Maybe (Key Game))
 storeGameIntoDB dbResult openings g = do
   let game = Pgn.parsedPgnGame g
   let opening = entityKey . opVariation <$> getOpening openings game
   let pgn = Pgn.gamePgnFull game
   let tags = Pgn.pgnGameTags g :: [Pgn.PgnTag]
   let requiredTags = trace (show tags) $ parseRequiredTags tags
-  if isJust requiredTags 
+  if isJust requiredTags
     then do
       let parsedTags = fromJust requiredTags
       (playerWhite, playerBlack) <- storePlayers dbResult parsedTags
@@ -114,11 +126,13 @@ data RequiredTags = RequiredTags {
   , requiredEvent :: Pgn.PgnTag}
 
 parseRequiredTags :: [Pgn.PgnTag] -> Maybe RequiredTags
-parseRequiredTags tags = RequiredTags <$> maybeWhite <*> maybeBlack <*> maybeResult <*> maybeEvent
-  where maybeWhite = Helpers.safeHead $ filter filterWhitePlayer tags
-        maybeBlack = Helpers.safeHead $ filter filterBlackPlayer tags
-        maybeResult = Helpers.safeHead $ filter filterResult tags
-        maybeEvent = Helpers.safeHead $ filter filterEvent tags
+parseRequiredTags tags =
+  RequiredTags <$> maybeWhite <*> maybeBlack <*> maybeResult <*> maybeEvent
+  where
+    maybeWhite = Helpers.safeHead $ filter filterWhitePlayer tags
+    maybeBlack = Helpers.safeHead $ filter filterBlackPlayer tags
+    maybeResult = Helpers.safeHead $ filter filterResult tags
+    maybeEvent = Helpers.safeHead $ filter filterEvent tags
   
 isPlayer :: Pgn.PgnTag -> Bool
 isPlayer (Pgn.PgnWhite _) = True
@@ -153,7 +167,10 @@ resultDBFormat (Pgn.PgnResult Pgn.Draw) = 0
 resultDBFormat _ = 0
 
 getDate :: [Pgn.PgnTag] -> Maybe Day
-getDate tags = join $ fmap (\(Pgn.PgnDate d) -> rightToMaybe (parseOnly dateStringParse (Te.pack d))) $ listToMaybe $ filter filterDate tags
+getDate tags =
+  join $
+  fmap (\(Pgn.PgnDate d) -> rightToMaybe (parseOnly dateStringParse (Te.pack d))) $
+  listToMaybe $ filter filterDate tags
 
 dateStringParse :: Parser Day
 dateStringParse = do
@@ -164,10 +181,18 @@ dateStringParse = do
   day <- many' digit
   return $ fromGregorian (read year :: Integer) (read month :: Int) (read day :: Int)
 
-readTextIntoDB :: MonadIO m => String -> String -> Te.Text -> Bool -> m (Key Database, [Maybe (Key Game)])
-readTextIntoDB dbName chessDBName text isPublic = liftIO $ inBackend (connString dbName) $ readTextWithPersist chessDBName text isPublic
+readTextIntoDB ::
+     MonadIO m
+  => String
+  -> String
+  -> Te.Text
+  -> Bool
+  -> m (Key Database, [Maybe (Key Game)])
+readTextIntoDB dbName chessDBName text isPublic =
+  liftIO $ inBackend (connString dbName) $ readTextWithPersist chessDBName text isPublic
 
-readTextWithPersist :: String -> Tu.Text -> Bool -> DataAction (Key Database, [Maybe (Key Game)])
+readTextWithPersist ::
+     String -> Tu.Text -> Bool -> DataAction (Key Database, [Maybe (Key Game)])
 readTextWithPersist chessDBName text isPublic = do
   dbResult <- insertBy (Database chessDBName isPublic)
   let dbKey = keyReader dbResult
@@ -177,9 +202,7 @@ readTextWithPersist chessDBName text isPublic = do
   transactionSave
   return (dbKey, gameResults)
 
-
 listToInClause :: [Int] -> String
 listToInClause ints = clause
   where intStrings = fmap show ints :: [String]
         clause = '(' : intercalate ", " intStrings ++ ")"
-

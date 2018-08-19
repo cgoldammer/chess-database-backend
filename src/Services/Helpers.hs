@@ -5,33 +5,46 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE DeriveGeneric     #-}
-{-# LANGUAGE DeriveAnyClass     #-}
-{-# LANGUAGE PolyKinds         #-}
-{-# LANGUAGE TypeFamilies      #-}
-{-# LANGUAGE TypeOperators     #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE PolyKinds #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeOperators #-}
 
 module Services.Helpers where
 
-import Prelude hiding (lookup)
-import GHC.Generics (Generic)
-import Data.Map (Map, mapKeys, assocs, lookup, elems, fromList, mapWithKey)
-import Data.Aeson.Types (ToJSON, toJSON, fieldLabelModifier, genericToJSON, defaultOptions)
-import Database.Persist (PersistEntity, PersistValue( PersistInt64), keyToValues)
-import Database.Persist.Postgresql (Key, entityKey, entityVal, Entity, toSqlKey)
-import Data.Char (toLower)
-import Data.List (sortOn, groupBy)
-import Control.Monad (join)
-import Data.Maybe (fromJust, fromMaybe, catMaybes)
 import Control.Lens ((^.), _1, _2, _3, to)
+import Control.Monad (join)
+import Data.Aeson.Types
+  ( ToJSON
+  , defaultOptions
+  , fieldLabelModifier
+  , genericToJSON
+  , toJSON
+  )
+import Data.Char (toLower)
+import Data.List (groupBy, sortOn)
 import qualified Data.List.Safe as Safe (head)
+import Data.Map (Map, assocs, elems, fromList, lookup, mapKeys, mapWithKey)
+import Data.Maybe (catMaybes, fromJust, fromMaybe)
+import Database.Persist (PersistEntity, PersistValue(PersistInt64), keyToValues)
+import Database.Persist.Postgresql (Entity, Key, entityKey, entityVal, toSqlKey)
+import GHC.Generics (Generic)
+import Prelude hiding (lookup)
 
 import Services.StatsHelpers
 import Services.Types
 
 type EntityMap a = Map (Key a) a
+
 type DataForMoveAverage = (GameResult, IsWhite, MoveEval)
-data GameResult = Win | Draw | Lose deriving (Eq, Show)
+
+data GameResult
+  = Win
+  | Draw
+  | Lose
+  deriving (Eq, Show)
+
 type EvalResult = (Entity MoveEval, Entity Game)
 
 type MoveNumber = Int
@@ -44,7 +57,8 @@ padEvals :: Int -> GameResult -> [(MoveNumber, EvalInt)] -> [(MoveNumber, EvalIn
 padEvals desiredLength result vals
   | length vals >= desiredLength = vals
   | otherwise = vals ++ zipped
-      where zipped = zip [(length vals + 1)..desiredLength] (repeat (resultValue result))
+  where
+    zipped = zip [(length vals + 1) .. desiredLength] (repeat (resultValue result))
 
 invertGameResult :: GameResult -> GameResult
 invertGameResult Win = Lose

@@ -1,12 +1,17 @@
 module AppTypes where
 
-data AppType = Dev | Prod | Test deriving Show
-data Settings = Settings {
-  appType :: AppType
-, showLogin :: Bool
-, appDBName :: String
-, appPort :: Int
-} deriving Show
+data AppType
+  = Dev
+  | Prod
+  | Test
+  deriving (Show)
+
+data Settings = Settings
+  { appType :: AppType
+  , showLogin :: Bool
+  , appDBName :: String
+  , appPort :: Int
+  } deriving (Show)
 
 getSettings :: AppType -> Settings
 getSettings Dev = Settings Dev True (getDBName Dev) (getPortForApp Dev)

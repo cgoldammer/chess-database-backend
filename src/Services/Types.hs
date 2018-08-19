@@ -1,23 +1,23 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE EmptyDataDecls             #-}
-{-# LANGUAGE FlexibleContexts           #-}
-{-# LANGUAGE GADTs                      #-}
+{-# LANGUAGE EmptyDataDecls #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE MultiParamTypeClasses      #-}
-{-# LANGUAGE QuasiQuotes                #-}
-{-# LANGUAGE TemplateHaskell            #-}
-{-# LANGUAGE TypeFamilies               #-}
-
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE QuasiQuotes #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TypeFamilies #-}
 
 module Services.Types where
 
-import Data.Time (Day, UTCTime)
-import Database.Persist.TH (persistLowerCase, share, mkPersist, sqlSettings, mkMigrate)
-import Database.Persist (Entity, entityKey)
 import Data.Aeson (toJSON)
+import Data.Time (Day, UTCTime)
+import Database.Persist (Entity, entityKey)
+import Database.Persist.TH (mkMigrate, mkPersist, persistLowerCase, share, sqlSettings)
 
 share [mkPersist sqlSettings, mkMigrate "migrateAll"] [persistLowerCase|
+
 Database json
   name String
   isPublic Bool
