@@ -282,12 +282,16 @@ storeGameAttributes dbGame = do
 storePositionAttribute :: PositionAttribute -> DataAction ()
 storePositionAttribute pa = void $ insertBy pa
 
-storeAtt :: Int -> DataAction ()
-storeAtt num = do
+deleteAtt :: DataAction ()
+deleteAtt = do
   deleteWhere ([] :: [Filter PositionAttribute])
   deleteWhere ([] :: [Filter Position])
+  return ()
+
+storeAtt :: Int -> Int -> DataAction ()
+storeAtt start num = do
   games :: [Entity Game] <- selectList [] []
-  let g = take num games
+  let g = take num $ drop start $ games
   mapM_ storeGameAttributes g
 
 inb :: String -> DataAction a -> IO a

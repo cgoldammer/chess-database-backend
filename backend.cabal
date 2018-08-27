@@ -74,6 +74,7 @@ library
     , mime-mail
     , http-client-tls
     , smtp-mail
+    , split
 
 Executable app
   hs-source-dirs: src
@@ -137,6 +138,7 @@ Executable app
     , mime-mail
     , http-client-tls
     , smtp-mail
+    , split
   main-is: Main.hs
 
 

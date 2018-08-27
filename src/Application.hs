@@ -110,7 +110,8 @@ loginRoutes =
   , ("register", with auth handleNewUser)
   , ("logout", with auth handleLogout >> resetUser)
   , ("resetPasswordData", with auth resetPasswordHandler)
-  , ("sendPasswordResetEmail", with auth sendPasswordResetHandler)
+  -- disabled until I think through how to avoid spamming
+  -- , ("sendPasswordResetEmail", with auth sendPasswordResetHandler)
   ]
 
 writeLoginSuccess :: Handler b (AuthManager b) ()

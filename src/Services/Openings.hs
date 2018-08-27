@@ -64,6 +64,8 @@ parseOpenings text = catMaybes $ fmap (rightToMaybe . parseOnly parseListData) s
 
 deleteOpenings :: DataAction ()
 deleteOpenings = do
+  rawExecute "UPDATE game set opening_variation=null" []
+  
   deleteWhere ([] :: [Filter OpeningVariation])
   deleteWhere ([] :: [Filter OpeningLine])
   deleteWhere ([] :: [Filter OpeningCode])

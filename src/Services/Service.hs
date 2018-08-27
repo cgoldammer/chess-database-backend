@@ -15,10 +15,12 @@
 {-# LANGUAGE TypeOperators #-}
 module Services.Service where
 
-import Control.Lens (_1, makeLenses)
+import Control.Lens (_1, makeLenses, over, _head, _tail, each)
 import qualified Control.Lens as Lens ((^.))
 import Control.Monad.State.Class (get, gets)
-import Data.Aeson (FromJSON, ToJSON, eitherDecode, encode)
+import Data.Char (toLower)
+import Data.Aeson (FromJSON, ToJSON, toJSON, eitherDecode, encode, genericToJSON, defaultOptions)
+import Data.Aeson.Types (fieldLabelModifier)
 import qualified Data.ByteString.Char8 as B (ByteString, pack)
 import Data.List (groupBy, intercalate)
 import qualified Data.Text as T (Text, length, pack, unpack)
@@ -592,7 +594,10 @@ data MoveEvaluationData = MoveEvaluationData {
   moveEvalsGame :: Entity Game
 , moveEvalsMoveEval :: MoveEval
 , moveEvalsMoveLoss :: MoveLoss
-} deriving (Show, Generic, ToJSON)
+} deriving (Show, Generic)
+
+instance ToJSON MoveEvaluationData where
+  toJSON = genericToJSON defaultOptions { fieldLabelModifier = renameField "moveEvals"}
 
 data MoveLoss = MoveLossCP Int | MoveLossMate Int deriving (Show, Generic, ToJSON)
 
@@ -635,7 +640,16 @@ data GameDataFormatted = GameDataFormatted {
   , gameDataOpeningLine :: Maybe (Entity OpeningLine)
   , gameDataPlayerWhite :: Entity Player
   , gameDataPlayerBlack :: Entity Player
-  , gameDataAttributes :: [Entity GameAttribute]} deriving (Generic, FromJSON, ToJSON)
+  , gameDataAttributes :: [Entity GameAttribute]} deriving (Generic)
+
+renameField :: String -> String -> String
+renameField toDrop s = lowerFirst $ drop (length toDrop) s
+
+lowerFirst :: String -> String
+lowerFirst = over _head toLower . over (_tail.each) id
+
+instance ToJSON GameDataFormatted where
+  toJSON = genericToJSON defaultOptions { fieldLabelModifier = renameField "gameData"}
 
 getGamesHandler ::
      GameRequestData -> (GameRequestData -> SqlPersistM [a]) -> Handler b Service [a]
