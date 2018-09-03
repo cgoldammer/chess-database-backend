@@ -94,6 +94,7 @@ import Services.Helpers
   , groupWithVal
   , intToKey
   , intToKeyDB
+  , intToKeyGame
   , summarizeEvals
   )
 import Services.Sql
@@ -126,6 +127,7 @@ type ChessApi m =
   "games" :> Encoded GameRequestData :> Get '[JSON] [GameDataFormatted] :<|>
   "gameEvaluations" :> Encoded GameRequestData :> Get '[JSON] PlayerGameEvaluations :<|>
   "moveEvaluations" :> Encoded GameRequestData :> Get '[JSON] [MoveEvaluationData] :<|>
+  "moveEvaluationsFromIds" :> Encoded Ids :> Get '[JSON] [MoveEvaluationData] :<|>
   "test" :> QueryParam "testData" (JSONEncoded TestData) :> Get '[JSON] [Int] :<|>
   "uploadDB" :> ReqBody '[JSON] UploadData :> Post '[JSON] UploadResult :<|>
   "addEvaluations" :> ReqBody '[JSON] EvaluationRequest :> Post '[JSON] () :<|>
@@ -145,6 +147,7 @@ apiServer =
   maybeHandler getGames :<|>
   maybeHandler gameEvaluations :<|>
   maybeHandler moveEvaluationHandler :<|>
+  maybeHandler moveEvaluationFromIdHandler :<|>
   maybeHandler testCall' :<|>
   uploadDBHelper :<|>
   addEvaluations :<|>
@@ -541,6 +544,8 @@ uploadDB upload = do
 addDBPermission :: Key Database -> Maybe String -> Handler b Service (Key DatabasePermission)
 addDBPermission dbResult user = runPersist $ insert $ DatabasePermission dbResult (fromMaybe "" user) True True False
 
+data Ids = Ids { idValues :: [Int] } deriving (Generic, FromJSON)
+
 data GameRequestData = GameRequestData {
     gameRequestDB :: Int
   , gameRequestTournaments :: [Int]
@@ -550,15 +555,17 @@ data MoveEvaluationRequest = MoveEvaluationRequest {
   moveEvalGames :: GameList
 } deriving (Show, Generic, FromJSON)
 
-getMoveEvaluationData :: [Entity Game] -> TH.DataAction [MoveEvaluationData]
-getMoveEvaluationData gl = do
-  let gameIds = fmap entityKey gl
+
+
+getMoveEvaluationData :: Bool -> [Key Game] -> TH.DataAction [MoveEvaluationData]
+getMoveEvaluationData doFilter gameIds = do
   results :: [(Entity Game, Entity MoveEval)] <- select $  
     from $ \(g, me) -> do
       where_ $ (me ^. MoveEvalGameId ==. g ^. GameId) &&. ((g ^. GameId) `in_` valList gameIds)
       return (g, me)
   let filters = filter notAlreadyWinning . filter notAlreadyLosing . filter (highMoveLoss . moveEvalsMoveLoss)
-  let cleaned = filters $ getEvalData results
+  let activeFilter = if doFilter then filters else id
+  let cleaned = activeFilter $ getEvalData results
   return cleaned
 
 moveLossCutoff :: Int
@@ -585,10 +592,14 @@ notAlreadyLosing dat = evalWithColor >= (-evalCutoff)
         evalNum = fromMaybe 0 $ moveEvalEvalBest eval
         evalWithColor = if wasWhite then evalNum else (- evalNum)
 
+
+moveEvaluationFromIdHandler :: Ids -> Handler b Service [MoveEvaluationData]
+moveEvaluationFromIdHandler = runPersist . getMoveEvaluationData False . fmap intToKeyGame. idValues
+
 moveEvaluationHandler :: GameRequestData -> Handler b Service [MoveEvaluationData]
 moveEvaluationHandler grd = do
   games <- getJustGames grd
-  runPersist $ getMoveEvaluationData games
+  runPersist $ getMoveEvaluationData True $ fmap entityKey games
 
 data MoveEvaluationData = MoveEvaluationData {
   moveEvalsGame :: Entity Game
