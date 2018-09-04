@@ -17,6 +17,7 @@ module Services.Service where
 
 import Control.Lens (_1, makeLenses, over, _head, _tail, each)
 import qualified Control.Lens as Lens ((^.))
+import Control.Monad (when)
 import Control.Monad.State.Class (get, gets)
 import Data.Char (toLower)
 import Data.Aeson (FromJSON, ToJSON, toJSON, eitherDecode, encode, genericToJSON, defaultOptions)
@@ -128,7 +129,6 @@ type ChessApi m =
   "gameEvaluations" :> Encoded GameRequestData :> Get '[JSON] PlayerGameEvaluations :<|>
   "moveEvaluations" :> Encoded GameRequestData :> Get '[JSON] [MoveEvaluationData] :<|>
   "moveEvaluationsFromIds" :> Encoded Ids :> Get '[JSON] [MoveEvaluationData] :<|>
-  "test" :> QueryParam "testData" (JSONEncoded TestData) :> Get '[JSON] [Int] :<|>
   "uploadDB" :> ReqBody '[JSON] UploadData :> Post '[JSON] UploadResult :<|>
   "addEvaluations" :> ReqBody '[JSON] EvaluationRequest :> Post '[JSON] () :<|>
   "sendFeedback" :> ReqBody '[JSON] FeedbackData :> Post '[JSON] ()
@@ -138,17 +138,18 @@ chessApi = Proxy
 
 apiServer :: Server (ChessApi (Handler b Service)) (Handler b Service)
 apiServer =
-  getMyUser :<|> maybeHandler getPlayers :<|> maybeHandler getTournaments :<|>
+  getMyUser :<|> 
+  validatedHandler getPlayers :<|> 
+  validatedHandler getTournaments :<|>
   getDatabases :<|>
-  maybeHandler getEvalResults :<|>
-  maybeHandler getMoveSummary :<|>
-  maybeHandler getDataSummary :<|>
-  maybeHandler getResultPercentages :<|>
-  maybeHandler getGames :<|>
-  maybeHandler gameEvaluations :<|>
-  maybeHandler moveEvaluationHandler :<|>
-  maybeHandler moveEvaluationFromIdHandler :<|>
-  maybeHandler testCall' :<|>
+  validatedHandler getEvalResults :<|>
+  validatedHandler getMoveSummary :<|>
+  validatedHandler getDataSummary :<|>
+  validatedHandler getResultPercentages :<|>
+  validatedHandler getGames :<|>
+  validatedHandler gameEvaluations :<|>
+  validatedHandler moveEvaluationHandler :<|>
+  validatedHandler moveEvaluationFromIdHandler :<|>
   uploadDBHelper :<|>
   addEvaluations :<|>
   sendFeedback
@@ -210,6 +211,13 @@ instance (FromJSON a) => FromHttpApiData (JSONEncoded a) where
 
 instance (ToJSON a) => ToHttpApiData (JSONEncoded a) where
   toQueryParam (JSONEncoded x) = decodeUtf8 $ LBS.toStrict $ encode x
+  
+validatedHandler ::
+     (HasDefault d, QueryForDB q)
+  => (q -> Handler b Service d)
+  -> Maybe (JSONEncoded q)
+  -> Handler b Service d
+validatedHandler = maybeHandler . validateRequestForDB
 
 -- Parsing the query parameters into JSON returns a `Maybe (JSONEncoded a)`. In practice,
 -- I'll usually have a function `h :: a -> Handler b Service d`, so this function
@@ -289,6 +297,18 @@ instance HasDefault [a] where
 instance HasDefault DataSummary where
   defaultVal = DataSummary 0 0 0 0
 
+class QueryForDB a where
+  getDB :: a -> Int
+
+instance QueryForDB DefaultSearchData where
+  getDB = searchDB
+
+instance QueryForDB GameRequestData where
+  getDB = gameRequestDB
+
+instance QueryForDB Ids where
+  getDB = idDB
+
 data DefaultSearchData = DefaultSearchData { searchDB :: Int } deriving (Generic, FromJSON, ToJSON, Show)
 type QueryType = (Single Int, Single Int, Single Int, Single Int)
 
@@ -358,6 +378,14 @@ getTournaments searchData = runPersist $ do
     from $ \(t, g) -> do
       where_ $ (g^.GameDatabaseId ==. db) &&. (t^.TournamentId ==. g^.GameTournament)
       return t
+
+validateRequestForDB :: QueryForDB q => (q -> Handler b Service c) -> q -> Handler b Service c
+validateRequestForDB handler q = do
+  let db = getDB q
+  dbs <- getDatabases
+  let keys = fmap (dbKeyInt . entityKey) dbs
+  let found = db `elem` keys
+  if found then handler q else fail "Wrong permission"
 
 evalData :: GameRequestData -> Handler b Service ([Entity Player], [EvalResult])
 evalData (GameRequestData db tournaments) = do
@@ -430,6 +458,7 @@ data EvaluationRequest = EvaluationRequest
   , evaluationOverwrite :: Bool
   } deriving (Generic, FromJSON)
 
+
 type EvaluationResult = Int
 
 -- A helper function so we can wait in tenth of seconds.
@@ -439,6 +468,9 @@ waitTenths = threadDelay . (*100000)
 addEvaluations :: EvaluationRequest -> Handler b Service ()
 addEvaluations request = do
   let keyForDB = intToKeyDB $ evaluationDB request
+  canWrite <- canWriteToDB keyForDB
+  when (not canWrite) $ fail "wrong permission"
+
   let overwrite = evaluationOverwrite request
   dbName <- getDBName
   games :: [Entity Game] <- liftIO $ gamesInDB dbName keyForDB overwrite
@@ -541,10 +573,19 @@ uploadDB upload = do
       addEvaluations (EvaluationRequest (dbKeyInt db) False)
       return $ UploadSuccess $ length results
 
+canWriteToDB :: Key Database -> Handler b Service Bool
+canWriteToDB keyForDB = do
+  usr <- currentUserName
+  dbp :: Maybe (Entity DatabasePermission) <-
+    runPersist $ PsP.getBy $ UniqueDatabasePermission keyForDB (fromMaybe "" usr)
+  let canWrite = maybe False (databasePermissionWrite . entityVal) dbp
+  return canWrite
+
+
 addDBPermission :: Key Database -> Maybe String -> Handler b Service (Key DatabasePermission)
 addDBPermission dbResult user = runPersist $ insert $ DatabasePermission dbResult (fromMaybe "" user) True True False
 
-data Ids = Ids { idValues :: [Int] } deriving (Generic, FromJSON)
+data Ids = Ids { idDB :: Int, idValues :: [Int] } deriving (Generic, FromJSON)
 
 data GameRequestData = GameRequestData {
     gameRequestDB :: Int
@@ -556,12 +597,12 @@ data MoveEvaluationRequest = MoveEvaluationRequest {
 } deriving (Show, Generic, FromJSON)
 
 
-
-getMoveEvaluationData :: Bool -> [Key Game] -> TH.DataAction [MoveEvaluationData]
-getMoveEvaluationData doFilter gameIds = do
+getMoveEvaluationData :: Bool -> Key Database -> [Key Game] -> TH.DataAction [MoveEvaluationData]
+getMoveEvaluationData doFilter db gameIds = do
   results :: [(Entity Game, Entity MoveEval)] <- select $  
     from $ \(g, me) -> do
-      where_ $ (me ^. MoveEvalGameId ==. g ^. GameId) &&. ((g ^. GameId) `in_` valList gameIds)
+      where_ $ (me ^. MoveEvalGameId ==. g ^. GameId) &&. ((g ^. GameId) `in_` valList gameIds) &&.
+               (g ^. GameDatabaseId ==. val db)
       return (g, me)
   let filters = filter notAlreadyWinning . filter notAlreadyLosing . filter (highMoveLoss . moveEvalsMoveLoss)
   let activeFilter = if doFilter then filters else id
@@ -592,14 +633,17 @@ notAlreadyLosing dat = evalWithColor >= (-evalCutoff)
         evalNum = fromMaybe 0 $ moveEvalEvalBest eval
         evalWithColor = if wasWhite then evalNum else (- evalNum)
 
-
 moveEvaluationFromIdHandler :: Ids -> Handler b Service [MoveEvaluationData]
-moveEvaluationFromIdHandler = runPersist . getMoveEvaluationData False . fmap intToKeyGame. idValues
+moveEvaluationFromIdHandler (Ids db values) = do
+  let keyDB = intToKeyDB db
+  evals <- runPersist $ getMoveEvaluationData False keyDB (fmap intToKeyGame values)
+  return evals
 
 moveEvaluationHandler :: GameRequestData -> Handler b Service [MoveEvaluationData]
 moveEvaluationHandler grd = do
   games <- getJustGames grd
-  runPersist $ getMoveEvaluationData True $ fmap entityKey games
+  let keyDB = intToKeyDB $ gameRequestDB grd
+  runPersist $ getMoveEvaluationData True keyDB (fmap entityKey games)
 
 data MoveEvaluationData = MoveEvaluationData {
   moveEvalsGame :: Entity Game
