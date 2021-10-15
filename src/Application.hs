@@ -10,7 +10,7 @@ module Application
   ) where
 
 import AppTypes
-import Control.Lens (makeLenses, view)
+import Control.Lens (Lens', makeLenses, view, to)
 import Control.Monad (join, liftM3, when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.State.Class (get)
@@ -74,7 +74,7 @@ data App = App
   , _sess :: Snaplet SessionManager
   , _db :: Snaplet PersistState
   , _auth :: Snaplet (AuthManager App)
-  , _service :: Snaplet S.Service
+  , _service :: Snaplet (S.Service App)
   }
 
 makeLenses ''App
@@ -93,12 +93,17 @@ app settings =
     d <-
       nestSnaplet "db" db $
       S.initPersistWithDB dbName (runMigrationUnsafe migrateAuth)
-    a <-
+    a :: Snaplet (AuthManager App) <-
       nestSnaplet "auth" auth $
       initPersistAuthManager sess (persistPool $ view snapletValue d)
-    ls <- nestSnaplet "api" service $ S.serviceInit dbName
+
+    let user = view snapletValue a
+    let login = fmap (T.unpack . userLogin) $ activeUser user
+    liftIO $ print $ "User" ++ show login
+
+    service <- nestSnaplet "api" service $ S.serviceInit dbName auth
     addRoutes $ routes $ showLogin settings
-    return $ App h s d a ls
+    return $ App h s d a service
 
 routes :: Bool -> [(B.ByteString, Handler App App ())]
 routes False = []
@@ -118,6 +123,7 @@ writeLoginSuccess :: Handler b (AuthManager b) ()
 writeLoginSuccess = do
   user <- currentUser
   let login = fmap (T.unpack . userLogin) user :: Maybe String
+  -- redirect "/"
   modifyResponse $ setResponseStatus 200 "Success"
   writeBS $ B.pack $ fromMaybe "" login
 
@@ -131,7 +137,7 @@ handleLoginSubmit = do
   loginUser "email" "password" Nothing writeLoginFailure writeLoginSuccess
   user <- currentUser
   let login = fmap (T.unpack . userLogin) user
-  withTop service $ S.changeUser login
+  liftIO $ print $ "Changing user to" ++ show login
   return ()
 
 resetUser :: Handler App App ()

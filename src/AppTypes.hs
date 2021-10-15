@@ -15,7 +15,7 @@ data Settings = Settings
 
 getSettings :: AppType -> Settings
 getSettings Dev = Settings Dev True (getDBName Dev) (getPortForApp Dev)
-getSettings Prod = Settings Prod False (getDBName Prod) (getPortForApp Prod)
+getSettings Prod = Settings Prod True (getDBName Prod) (getPortForApp Prod)
 getSettings Test = Settings Test True (getDBName Test) (getPortForApp Test)
 
 getAppType :: String -> AppType
@@ -29,6 +29,6 @@ getDBName Test = "test"
 getDBName Prod = "prod"
 
 getPortForApp :: AppType -> Int
-getPortForApp Dev = 8000
+getPortForApp Dev = 8100
 getPortForApp Prod = 8001
-getPortForApp Test = 8002
+getPortForApp Test = 8102
