@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
+set -e
 
 APP=$1
-
 DB_NAME=$2
-DB_PASS=$4
 
 BUCKET_NAME=chessinsightsbackup
 
@@ -13,4 +12,6 @@ S3_FILE="s3://$BUCKET_NAME/$APP/$APP-backup-$TIMESTAMP"
 
 pg_dump -Fc --no-acl -h localhost -U postgres $DB_NAME > ~/backup/$TEMP_FILE
 s3cmd put ~/backup/$TEMP_FILE $S3_FILE --encrypt
-rm "$TEMP_FILE"
+
+# Delete backups older than 60 days
+find ~/backup -maxdepth 1 -mtime +60 -type f -delete
