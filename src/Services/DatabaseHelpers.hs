@@ -17,9 +17,14 @@ import Data.Attoparsec.Text (Parser, char, digit, many', parseOnly)
 import Data.Either (rights)
 import Data.Either.Combinators (rightToMaybe)
 import Data.List (intercalate)
+import Data.List.Split (chunksOf)
 import Data.Maybe (fromJust, isJust, listToMaybe)
-import qualified Data.Text as Te (Text, pack)
+import Text.Printf (printf)
+import qualified Data.Text as Te (Text, pack, intercalate)
+import qualified Data.Text.IO as TeIO (writeFile)
 import Data.Time (Day, fromGregorian)
+import qualified Filesystem.Path.CurrentOS as FS (fromText)
+import qualified Turtle as Tu (input, strict)
 import Database.Persist
   ( Entity
   , Key
@@ -181,26 +186,55 @@ dateStringParse = do
   day <- many' digit
   return $ fromGregorian (read year :: Integer) (read month :: Int) (read day :: Int)
 
+writeChunk :: String -> Int -> [Te.Text] -> IO ()
+writeChunk fileName fileNumber texts = do
+  let fullName = fileName ++ "_" ++ (printf "%05d" fileNumber) ++ ".pgn"
+  TeIO.writeFile fullName (Te.intercalate (Te.pack "\n") texts)
+  
+
+splittingHelper :: String -> Int -> IO ()
+splittingHelper fileName number = do
+  fileText <- Tu.strict $ Tu.input $ FS.fromText $ Te.pack fileName
+
+  let splits = Pgn.splitIntoGames fileText
+  let chunks = zip [0..] $ (chunksOf number splits)
+
+  mapM_ (uncurry (writeChunk fileName)) chunks
+
+
+  
+
 readTextIntoDB ::
      MonadIO m
   => String
   -> String
   -> Te.Text
   -> Bool
+  -> Maybe String
   -> m (Key Database, [Maybe (Key Game)])
-readTextIntoDB dbName chessDBName text isPublic =
-  liftIO $ inBackend (connString dbName) $ readTextWithPersist chessDBName text isPublic
+readTextIntoDB dbName chessDBName text isPublic user =
+  liftIO $ inBackend (connString dbName) $ readTextWithPersist chessDBName text isPublic user
 
 readTextWithPersist ::
-     String -> Tu.Text -> Bool -> DataAction (Key Database, [Maybe (Key Game)])
-readTextWithPersist chessDBName text isPublic = do
-  dbResult <- insertBy (Database chessDBName isPublic)
+     String -> Tu.Text -> Bool -> Maybe String -> DataAction (Key Database, [Maybe (Key Game)])
+readTextWithPersist chessDBName text isPublic user = do
+  dbResult <- insertBy (Database chessDBName isPublic user)
+  transactionSave
   let dbKey = keyReader dbResult
+
+  -- Lazily parse and enter games into db
   let games = Pgn.getGamesFromText text
   openings <- getOpeningData
+
+
+
+
+
   gameResults <- mapM (storeGameIntoDB dbKey openings) $ rights games
   transactionSave
   return (dbKey, gameResults)
+
+
 
 listToInClause :: [Int] -> String
 listToInClause ints = clause

@@ -13,6 +13,7 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE PartialTypeSignatures #-}
 module Services.Service where
 
 import Control.Lens (_1, makeLenses, over, _head, _tail, each)
@@ -36,12 +37,14 @@ import Snap.Snaplet
   ( Handler
   , MonadSnaplet
   , Snaplet
+  , SnapletLens
   , SnapletInit
   , addRoutes
   , getSnapletUserConfig
   , makeSnaplet
   , nestSnaplet
   , with
+  , withTop
   )
 import Snap.Snaplet.PostgresqlSimple
   ( HasPostgres
@@ -51,6 +54,11 @@ import Snap.Snaplet.PostgresqlSimple
   , setLocalPostgresState
   )
 import System.Environment (lookupEnv)
+
+import Snap.Snaplet.Auth
+  ( userLogin
+  , currentUser
+  , AuthManager(..))
 
 import Control.Concurrent
   ( MVar
@@ -62,7 +70,6 @@ import Control.Concurrent
   )
 import Control.Monad (liftM2)
 import Control.Monad.IO.Class (MonadIO, liftIO)
-import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Map (toList)
 import Data.Maybe (fromMaybe, isJust, listToMaybe)
 import Data.Proxy (Proxy(..))
@@ -106,11 +113,12 @@ import qualified Test.Helpers as TH
 
 import qualified Data.ByteString.Lazy as LBS
 import Data.Text.Encoding
-data Service = Service {
+data Service b = Service {
     _servicePG :: Snaplet Postgres
   , _serviceDB :: Snaplet PersistState
-  , _serviceCurrentUser :: IORef (Maybe String)
-  , _serviceAllTasks :: MVar AllTasks}
+  , _serviceAllTasks :: MVar AllTasks
+  , _serviceAuth :: SnapletLens b (AuthManager b)
+}
 makeLenses ''Service
 
 type (Encoded a) = QueryParam "data" (JSONEncoded a)
@@ -121,6 +129,7 @@ type ChessApi m =
   "players" :> Encoded DefaultSearchData :> Get '[JSON] [Entity Player] :<|> 
   "tournaments" :> Encoded DefaultSearchData :> Get '[JSON] [Entity Tournament] :<|>
   "databases" :> Get '[JSON] [Entity Database] :<|>
+  "databaseStats" :> Get '[JSON] [DBResult] :<|>
   "evalResults" :> Encoded GameRequestData :> Get '[JSON] [EvalResult] :<|>
   "moveSummary" :> Encoded GameRequestData :> Get '[JSON] [MoveSummary] :<|>
   "dataSummary" :> Encoded DefaultSearchData :> Get '[JSON] DataSummary :<|>
@@ -133,15 +142,16 @@ type ChessApi m =
   "addEvaluations" :> ReqBody '[JSON] EvaluationRequest :> Post '[JSON] () :<|>
   "sendFeedback" :> ReqBody '[JSON] FeedbackData :> Post '[JSON] ()
 
-chessApi :: Proxy (ChessApi (Handler b Service))
+chessApi :: Proxy (ChessApi (Handler b (Service b)))
 chessApi = Proxy
 
-apiServer :: Server (ChessApi (Handler b Service)) (Handler b Service)
+apiServer :: Server (ChessApi (Handler b (Service b))) (Handler b (Service b))
 apiServer =
   getMyUser :<|> 
   validatedHandler getPlayers :<|> 
   validatedHandler getTournaments :<|>
   getDatabases :<|>
+  getDatabaseStats :<|>
   validatedHandler getEvalResults :<|>
   validatedHandler getMoveSummary :<|>
   validatedHandler getDataSummary :<|>
@@ -165,7 +175,7 @@ trySendEmail subject to body = do
   let codes = liftM2 (,) accessCode secretCode
   liftIO $ maybe doNothing (uncurry (sendEmail subject toAdd body)) codes
 
-sendFeedback :: FeedbackData -> Handler b Service ()
+sendFeedback :: FeedbackData -> Handler b (Service b) ()
 sendFeedback (FeedbackData feedbackText feedbackEmail) =
   liftIO $
   trySendEmail "Feedback" "goldammer.christian@gmail.com" $
@@ -214,9 +224,9 @@ instance (ToJSON a) => ToHttpApiData (JSONEncoded a) where
   
 validatedHandler ::
      (HasDefault d, QueryForDB q)
-  => (q -> Handler b Service d)
+  => (q -> Handler b (Service b) d)
   -> Maybe (JSONEncoded q)
-  -> Handler b Service d
+  -> Handler b (Service b) d
 validatedHandler = maybeHandler . validateRequestForDB
 
 -- Parsing the query parameters into JSON returns a `Maybe (JSONEncoded a)`. In practice,
@@ -225,9 +235,9 @@ validatedHandler = maybeHandler . validateRequestForDB
 -- the query could not get parsed
 maybeHandler ::
      HasDefault d
-  => (a -> Handler b Service d)
+  => (a -> Handler b (Service b) d)
   -> Maybe (JSONEncoded a)
-  -> Handler b Service d
+  -> Handler b (Service b) d
 maybeHandler h = maybe (return defaultVal) (h . unJSONEncoded)
 
 data TestData = TestData
@@ -235,24 +245,22 @@ data TestData = TestData
   , testNames :: [String]
   } deriving (Show, Generic, FromJSON, ToJSON)
 
-testCall' :: TestData -> Handler b Service [Int]
+testCall' :: TestData -> Handler b (Service b) [Int]
 testCall' td = return $ testInt td : fmap length (testNames td)
 
-serviceInit :: String -> SnapletInit b Service
-serviceInit dbName = makeSnaplet "chess" "Chess Service" Nothing $ do
+serviceInit :: String -> SnapletLens b (AuthManager b) -> SnapletInit b (Service b) 
+serviceInit dbName auth  = makeSnaplet "chess" "Chess Service" Nothing $ do
   pg <- nestSnaplet "pg" servicePG pgsInit
   d <- nestSnaplet "db" serviceDB $ initPersistWithDB dbName (runMigrationUnsafe migrateAll)
   addRoutes chessRoutes
-  usr <- liftIO $ newIORef Nothing
 
   -- Creating an MVar with a list of evaluation tasks
   -- and spinning of a thread to run those evaluations.
   tasks <- liftIO $ newMVar emptyTasks
   liftIO $ forkIO $ runEvalThread dbName tasks
+  return $ Service pg d tasks auth
 
-  return $ Service pg d usr tasks
-
-chessRoutes :: [(B.ByteString, Handler b Service ())]
+chessRoutes :: [(B.ByteString, Handler b (Service b) ())]
 chessRoutes = [("", serveSnap chessApi apiServer)]
 
 type LoginUser = Maybe Int
@@ -268,16 +276,28 @@ mkSnapletPgPoolWithDB dbName = do
 initPersistWithDB :: String -> SqlPersistT (NoLoggingT IO) a -> SnapletInit b PersistState
 initPersistWithDB dbName = initPersistGeneric $ mkSnapletPgPoolWithDB dbName
 
-currentUserName :: Handler b Service (Maybe String)
-currentUserName = gets _serviceCurrentUser >>= (liftIO . readIORef)
+currentUserName :: Handler b (Service b) (Maybe String)
+currentUserName = do
+  lens <- gets _serviceAuth
+  user <- withTop lens currentUser
+  -- with serviceAuth currentUser
+  
+  -- man <- gets _serviceAuth
+  -- return undefined
+  -- let user = activeUser $ view snapletValue man
+  let login = fmap (T.unpack . userLogin) user
+  return login
+  -- return login
+  
 
-changeUser :: Maybe String -> Handler b Service ()
-changeUser value = gets _serviceCurrentUser >>= liftIO . flip writeIORef value
+changeUser :: Maybe String -> Handler b (Service b) ()
+changeUser _ = do
+  return ()
 
-instance HasPersistPool (Handler b Service) where
+instance HasPersistPool (Handler b (Service b)) where
   getPersistPool = with serviceDB getPersistPool
 
-instance HasPostgres (Handler b Service) where
+instance HasPostgres (Handler b (Service b)) where
   getPostgresState = with servicePG get
   setLocalPostgresState = undefined
 
@@ -309,10 +329,34 @@ instance QueryForDB GameRequestData where
 instance QueryForDB Ids where
   getDB = idDB
 
+type DBQueryType = (Single String, Single Int, Single Int, Single Int)
+
+data DBResult = DBResult { 
+  dbResultName :: String
+, dbResultGames :: Int
+, dbResultGamesEval :: Int
+, dbResultEvals :: Int
+} deriving (Generic, ToJSON)
+
+toDBResults :: DBQueryType -> DBResult
+toDBResults (Single name, Single numGames, Single numGamesEval, Single numEvals) =
+  DBResult name numGames numGamesEval numEvals
+
+
+getDatabaseStats :: Handler b (Service b) [DBResult]
+getDatabaseStats = do
+  dbs <- getDatabases
+  let dbKeys = fmap (dbKeyInt . entityKey) dbs
+  let sub = substituteName "databases"
+  let query = (sub dbQuery dbKeys)
+  results :: [DBQueryType] <- runPersist $ rawSql query []
+  return $ fmap toDBResults results
+
+
 data DefaultSearchData = DefaultSearchData { searchDB :: Int } deriving (Generic, FromJSON, ToJSON, Show)
 type QueryType = (Single Int, Single Int, Single Int, Single Int)
 
-getDataSummary :: DefaultSearchData -> Handler b Service DataSummary
+getDataSummary :: DefaultSearchData -> Handler b (Service b) DataSummary
 getDataSummary searchData = do
   let db = searchDB searchData
   let arguments = replicate 4 $ PersistInt64 (fromIntegral db)
@@ -336,7 +380,7 @@ toResultPercentage :: ResultPercentageQueryResult -> ResultPercentage
 toResultPercentage (Single ownRating, Single oppRating, Single evalGroup, Single winP, Single drawP, Single numberEvals) =
   ResultPercentage ownRating oppRating evalGroup winP drawP numberEvals
 
-getPlayers :: DefaultSearchData -> Handler b Service [Entity Player]
+getPlayers :: DefaultSearchData -> Handler b (Service b) [Entity Player]
 getPlayers searchData =
   runPersist $ do
     let db = val $ intToKeyDB $ searchDB searchData
@@ -349,16 +393,17 @@ getPlayers searchData =
           (g ^. GameDatabaseId ==. db)
         return p
 
-getDatabases :: Handler b Service [Entity Database]
+getDatabases :: Handler b (Service b) [Entity Database]
 getDatabases = do
-  currentUser :: Maybe String <- currentUserName
+  currentUserEvaluated :: Maybe String <- currentUserName
+  liftIO $ print $ "Getting for " ++ show currentUserEvaluated
   runPersist $ do
     dbsPublic <-
       select $
       from $ \db -> do
         where_ (db ^. DatabaseIsPublic)
         return db
-    let searchUser = fromMaybe "" currentUser
+    let searchUser = fromMaybe "" currentUserEvaluated
     let searchCondition dbp =
           (dbp ^. DatabasePermissionUserId ==. val searchUser) &&.
           (dbp ^. DatabasePermissionRead ==. val True)
@@ -371,7 +416,7 @@ getDatabases = do
         return db
     return $ dbsPublic ++ dbsPersonal
   
-getTournaments :: DefaultSearchData -> Handler b Service [Entity Tournament]
+getTournaments :: DefaultSearchData -> Handler b (Service b) [Entity Tournament]
 getTournaments searchData = runPersist $ do
   let db = val $ intToKeyDB $ searchDB searchData
   select $ distinct $ 
@@ -379,25 +424,27 @@ getTournaments searchData = runPersist $ do
       where_ $ (g^.GameDatabaseId ==. db) &&. (t^.TournamentId ==. g^.GameTournament)
       return t
 
-validateRequestForDB :: QueryForDB q => (q -> Handler b Service c) -> q -> Handler b Service c
+
+validateRequestForDB :: QueryForDB q => (q -> Handler b (Service b) c) -> q -> Handler b (Service b) c
 validateRequestForDB handler q = do
   let db = getDB q
   dbs <- getDatabases
   let keys = fmap (dbKeyInt . entityKey) dbs
   let found = db `elem` keys
+  liftIO $ print $ "FOUND: " ++ show keys ++ show found ++ show db
   if found then handler q else fail "Wrong permission"
 
-evalData :: GameRequestData -> Handler b Service ([Entity Player], [EvalResult])
+evalData :: GameRequestData -> Handler b (Service b) ([Entity Player], [EvalResult])
 evalData (GameRequestData db tournaments) = do
   let tournamentKeys = fmap intToKey tournaments
   players :: [Entity Player] <- getPlayers $ DefaultSearchData db
   evals <- getMoveEvals (intToKeyDB db) tournamentKeys
   return (players, evals)
 
-getEvalResults :: GameRequestData -> Handler b Service [EvalResult]
+getEvalResults :: GameRequestData -> Handler b (Service b) [EvalResult]
 getEvalResults = fmap snd . evalData
 
-getMoveSummary :: GameRequestData -> Handler b Service [MoveSummary]
+getMoveSummary :: GameRequestData -> Handler b (Service b) [MoveSummary]
 getMoveSummary grData = do
   (playerKeys, evals) <- evalData grData
   return $ summarizeEvals playerKeys evals
@@ -411,7 +458,7 @@ selectEvalResults db tournaments = do
     where_ $ (me ^. MoveEvalGameId ==. g ^. GameId) &&. (g ^. GameTournament ==. t ^. TournamentId) &&. tournamentCondition t &&. (g^.GameDatabaseId ==. val db)
     return (me, g)
 
-getMoveEvals :: Key Database -> [Key Tournament] -> Handler b Service [EvalResult]
+getMoveEvals :: Key Database -> [Key Tournament] -> Handler b (Service b) [EvalResult]
 getMoveEvals db tournaments = runPersist $ selectEvalResults db tournaments
 
 printName :: GameAttributeId -> String
@@ -431,7 +478,7 @@ parseEvalResults ::
 parseEvalResults (_, Single playerId, Single evaluation, Single result) =
   (playerId, evaluation, result)
 
-gameEvaluations :: GameRequestData -> Handler b Service PlayerGameEvaluations
+gameEvaluations :: GameRequestData -> Handler b (Service b) PlayerGameEvaluations
 gameEvaluations grd = do
   games <- getJustGames grd
   let gl = fmap dbKey games
@@ -465,7 +512,7 @@ type EvaluationResult = Int
 waitTenths :: Int -> IO ()
 waitTenths = threadDelay . (*100000)
 
-addEvaluations :: EvaluationRequest -> Handler b Service ()
+addEvaluations :: EvaluationRequest -> Handler b (Service b) ()
 addEvaluations request = do
   let keyForDB = intToKeyDB $ evaluationDB request
   canWrite <- canWriteToDB keyForDB
@@ -532,22 +579,22 @@ gamesInDB dbName keyForDB overwrite = TH.inBackend (connString dbName) $ do
   return $ if overwrite then allGames else difference
 
 
-getDBName :: Handler b Service String
+getDBName :: Handler b (Service b) String
 getDBName = do
-  conf <- getSnapletUserConfig
-  dbNameMaybe :: Maybe String <- liftIO $ DC.lookup conf "dbName"
+  _ <- getSnapletUserConfig
+  dbNameMaybe :: Maybe String <- liftIO $ lookupEnv "type"
+  liftIO $ print $ "Lookup: " ++ show dbNameMaybe
   return $ fromMaybe "dev" dbNameMaybe
 
-
-handleNoUser :: Handler b Service UploadResult
+handleNoUser :: Handler b (Service b) UploadResult
 handleNoUser = do
   modifyResponse $ setResponseStatus 403 "Data too big"
   return $ UploadFailure NotLoggedIn
 
-uploadDBHelper :: UploadData -> Handler b Service UploadResult
+uploadDBHelper :: UploadData -> Handler b (Service b) UploadResult
 uploadDBHelper upload = do
-  currentUser <- currentUserName
-  maybe handleNoUser (\_ -> uploadDB upload) currentUser
+  currentUserEvaluated <- currentUserName
+  maybe handleNoUser (\_ -> uploadDB upload) currentUserEvaluated
 
 -- Uploading a database from the db. The pgn is included
 -- in the `text` property of the JSON.
@@ -555,7 +602,7 @@ uploadDBHelper upload = do
 -- This is hacky, because optimally we'd want to server to not even respond
 -- to those requests, but I haven't figured out if this is possible
 -- to do in Nginx (I'd want a separate limit for this endpoint)
-uploadDB :: UploadData -> Handler b Service UploadResult
+uploadDB :: UploadData -> Handler b (Service b) UploadResult
 uploadDB upload = do
   let (name, text) = (uploadName upload, uploadText upload)
   let textLength = T.length text
@@ -566,14 +613,15 @@ uploadDB upload = do
       return $ UploadFailure UploadTooBig
     else do
       dbName <- getDBName
-      (db, results) <- liftIO $ readTextIntoDB dbName name text False
-      currentUser :: Maybe String <- currentUserName
-      addDBPermission db currentUser
+      currentUserEvaluated :: Maybe String <- currentUserName
+      (db, results) <- liftIO $ readTextIntoDB dbName name text False currentUserEvaluated
+      runPersist $ transactionSave
+      addDBPermission db currentUserEvaluated
       -- Storing evaluations for the database in an asynchronous thread.
       addEvaluations (EvaluationRequest (dbKeyInt db) False)
       return $ UploadSuccess $ length results
 
-canWriteToDB :: Key Database -> Handler b Service Bool
+canWriteToDB :: Key Database -> Handler b (Service b) Bool
 canWriteToDB keyForDB = do
   usr <- currentUserName
   dbp :: Maybe (Entity DatabasePermission) <-
@@ -582,7 +630,7 @@ canWriteToDB keyForDB = do
   return canWrite
 
 
-addDBPermission :: Key Database -> Maybe String -> Handler b Service (Key DatabasePermission)
+addDBPermission :: Key Database -> Maybe String -> Handler b (Service b) (Key DatabasePermission)
 addDBPermission dbResult user = runPersist $ insert $ DatabasePermission dbResult (fromMaybe "" user) True True False
 
 data Ids = Ids { idDB :: Int, idValues :: [Int] } deriving (Generic, FromJSON)
@@ -633,13 +681,13 @@ notAlreadyLosing dat = evalWithColor >= (-evalCutoff)
         evalNum = fromMaybe 0 $ moveEvalEvalBest eval
         evalWithColor = if wasWhite then evalNum else (- evalNum)
 
-moveEvaluationFromIdHandler :: Ids -> Handler b Service [MoveEvaluationData]
+moveEvaluationFromIdHandler :: Ids -> Handler b (Service b) [MoveEvaluationData]
 moveEvaluationFromIdHandler (Ids db values) = do
   let keyDB = intToKeyDB db
   evals <- runPersist $ getMoveEvaluationData False keyDB (fmap intToKeyGame values)
   return evals
 
-moveEvaluationHandler :: GameRequestData -> Handler b Service [MoveEvaluationData]
+moveEvaluationHandler :: GameRequestData -> Handler b (Service b) [MoveEvaluationData]
 moveEvaluationHandler grd = do
   games <- getJustGames grd
   let keyDB = intToKeyDB $ gameRequestDB grd
@@ -668,7 +716,7 @@ evalHelper ga meEntity = MoveEvaluationData ga me $ getMoveLoss me
   where me = entityVal meEntity
 
 getMoveLoss :: MoveEval -> MoveLoss
-getMoveLoss (MoveEval _ _ isWhite movePlayed moveBest evalAfter evalBefore mateAfter mateBefore _) =
+getMoveLoss (MoveEval _ _ isWhite movePlayed moveBest evalAfter evalBefore mateAfter mateBefore _ _ _ _) =
   if bestMovePlayed
     then MoveLossCP 0
     else moveLossBasic
@@ -683,7 +731,7 @@ getMoveLossHelper _ _ _ (Just _) (Just _) = MoveLossCP 0
 getMoveLossHelper _ _ (Just _) (Just before) _ = MoveLossMate (-before)
 getMoveLossHelper _ _ _ _ _= MoveLossCP 0
 
-getMyUser :: Handler b Service (Maybe AppUser)
+getMyUser :: Handler b (Service b) (Maybe AppUser)
 getMyUser = currentUserName >>= runPersist . selectUser . fmap T.pack 
 
 type GameData = (Entity Game, Entity Tournament, Maybe (Entity OpeningVariation), Maybe (Entity OpeningLine), Entity Player, Entity Player, Entity GameAttribute)
@@ -707,7 +755,7 @@ instance ToJSON GameDataFormatted where
   toJSON = genericToJSON defaultOptions { fieldLabelModifier = renameField "gameData"}
 
 getGamesHandler ::
-     GameRequestData -> (GameRequestData -> SqlPersistM [a]) -> Handler b Service [a]
+     GameRequestData -> (GameRequestData -> SqlPersistM [a]) -> Handler b (Service b) [a]
 getGamesHandler requestData getter = do
   usr <- currentUserName
   let keyForDB = intToKeyDB $ gameRequestDB requestData
@@ -722,10 +770,10 @@ getGamesHandler requestData getter = do
     then runPersist $ getter requestData
     else return []
 
-getGames :: GameRequestData -> Handler b Service [GameDataFormatted]
+getGames :: GameRequestData -> Handler b (Service b) [GameDataFormatted]
 getGames requestData = gameGrouper <$> getGamesHandler requestData getGames'
 
-getJustGames :: GameRequestData -> Handler b Service [Entity Game]
+getJustGames :: GameRequestData -> Handler b (Service b) [Entity Game]
 getJustGames requestData = getGamesHandler requestData getJustGames'
 
 groupSplitter :: [GameData] -> GameDataFormatted
@@ -764,26 +812,27 @@ getGames' (GameRequestData dbInt tournaments) = do
       return (g, t, ov, ol, pWhite, pBlack, ga)
 
 
-getResultPercentages :: DefaultSearchData -> Handler b Service [ResultPercentage]
+getResultPercentages :: DefaultSearchData -> Handler b (Service b) [ResultPercentage]
 getResultPercentages searchData = do
   let db = searchDB searchData
   results <- runPersist $ rawSql resultPercentageQuery [PersistInt64 (fromIntegral db)]
   return $ fmap toResultPercentage results
 
 -- |A useful handler for testing
-nothingHandler :: Handler b Service ()
+nothingHandler :: Handler b (Service b) ()
 nothingHandler = return ()
 
 -- |Create a default app user. The id for the app user is the user name.
-createAppUser :: T.Text -> Handler b Service ()
-createAppUser userLogin = do
+createAppUser :: T.Text -> Handler b (Service b) ()
+createAppUser userLoginCreate = do
   time <- liftIO getCurrentTime
-  runPersist $ insert_ $ AppUser (T.unpack userLogin) Nothing time
+  runPersist $ insert_ $ AppUser (T.unpack userLoginCreate) Nothing time
   return ()
 
 -- |Obtain the app user by user name.
 selectUser :: MonadIO m => Maybe T.Text -> SqlPersistT m (Maybe AppUser)
 selectUser (Just userId) = do
+  liftIO $ print $ show userId
   users <- select $ from $ \usr -> do
     where_ $ usr ^. AppUserUserId ==. val (T.unpack userId)
     return usr

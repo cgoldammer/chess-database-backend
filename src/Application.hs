@@ -10,7 +10,7 @@ module Application
   ) where
 
 import AppTypes
-import Control.Lens (Lens', makeLenses, view, to)
+import Control.Lens (makeLenses, view)
 import Control.Monad (join, liftM3, when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.State.Class (get)
@@ -101,9 +101,9 @@ app settings =
     let login = fmap (T.unpack . userLogin) $ activeUser user
     liftIO $ print $ "User" ++ show login
 
-    service <- nestSnaplet "api" service $ S.serviceInit dbName auth
+    serviceSnaplet <- nestSnaplet "api" service $ S.serviceInit dbName auth
     addRoutes $ routes $ showLogin settings
-    return $ App h s d a service
+    return $ App h s d a serviceSnaplet
 
 routes :: Bool -> [(B.ByteString, Handler App App ())]
 routes False = []

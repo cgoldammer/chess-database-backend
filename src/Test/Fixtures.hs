@@ -15,17 +15,21 @@ import Control.Monad.Trans.Reader (ReaderT)
 import Data.Either (rights)
 import Data.Either.Combinators (rightToMaybe)
 import Data.Text as Te (Text, pack)
+import Data.Time.Clock (getCurrentTime, UTCTime)
 import Database.Persist (Key, insertBy)
+import qualified Database.Persist.Postgresql as PsP (getBy)
 import Database.Persist.Sql
 import Debug.Trace (traceShow)
 import qualified Filesystem.Path.CurrentOS as FS (fromText)
 import System.Directory (listDirectory)
 import Text.RawString.QQ (r)
 import qualified Turtle as Tu (input, strict)
-
 import AppTypes
 import Services.DatabaseHelpers as DatabaseHelpers
 import Services.Types
+import Services.Helpers
+  ( dbKeyInt )
+
 import Test.Helpers as Helpers
 
 import qualified Chess.Pgn.Logic as Pgn
@@ -100,8 +104,16 @@ parseSet name folder = do
   files :: [String] <- getFolderPgns folder
   return (name, files)
 
+filesDev :: [(String, [String])]
+filesDev = 
+  -- [ ("dummy games", ["dev/dummy_games.pgn"])
+  -- , ("tata small", ["dev/tata_small.pgn"])
+  -- [ ("wijk", ["dev/WijkaanZee2012.pgn"])
+  [ ("wijk", ["dev/rejkjavik2018.pgn"])
+  ]
+
 getFiles :: AppType -> IO [(String, [String])]
-getFiles Dev = return [("dummy games", ["dev/dummy_games.pgn"]), ("tata small", ["dev/tata_small.pgn"])]
+getFiles Dev = return filesDev
 getFiles Test = return [("dummy games", ["dev/dummy_games.pgn"])]
 getFiles Prod = mapM (uncurry parseSet) fileSetsProd
 
@@ -112,11 +124,13 @@ storeGamesIntoDB = do
   files <- liftIO (getFiles (getAppType dbName))
   mapM_ storeFilesIntoDB files
 
+-- Example usage:
+-- storeFile "dummy" "dev/dummy_games.pgn" "dev"
 storeFile :: MonadIO m => String -> String -> String -> m ()
 storeFile dbName chessDBName fileName = do
   let fullName = "./data/games/" ++ fileName
   fileText <- Tu.strict $ Tu.input $ FS.fromText $ Te.pack fullName
-  DatabaseHelpers.readTextIntoDB dbName chessDBName fileText True
+  DatabaseHelpers.readTextIntoDB dbName chessDBName fileText True Nothing
   return ()
 
 storeFilesIntoDB ::
@@ -137,7 +151,6 @@ evaluateGames = do
   concat <$> mapM doEvaluation gamesReversed
   return ()
 
-
 doEvaluation ::
      (MonadReader FixtureSettings m, MonadIO m) => Entity Game -> m [Key MoveEval]
 doEvaluation dbGame = do
@@ -146,19 +159,23 @@ doEvaluation dbGame = do
 
 type SummaryFunction = Int -> Logic.Game -> IO [Pgn.MoveSummary]
 
+getEvalKeys :: MoveEval -> Unique MoveEval
+getEvalKeys m = UniqueMoveEval (moveEvalGameId m) (moveEvalMoveNumber m) (moveEvalIsWhite m)
+
 storeEvaluationIOHelper ::
      MonadIO m => SummaryFunction -> String -> Entity Game -> m [Key MoveEval]
 storeEvaluationIOHelper summaryFunction dbName dbGame = do
   let maybeGame = dbGameToPGN $ entityVal dbGame
   let evalTime = 100
+  time <- liftIO getCurrentTime
   case maybeGame of
     (Just game) -> do
       summaries <- liftIO $ summaryFunction evalTime game
       liftIO $
         inBackend (connString dbName) $ do
-          k <-
-            traceShow ("IO" ++ show summaries) $
-            mapM insertBy $ evalToRow (entityKey dbGame) summaries
+          let rows = evalToRow (entityKey dbGame) summaries time
+          mapM deleteBy $ fmap getEvalKeys rows
+          k <- mapM insertBy rows
           return $ rights k
     Nothing -> return []
 
@@ -167,6 +184,7 @@ storeEvaluationIO = storeEvaluationIOHelper Pgn.gameSummaries
 
 storeEvaluationIOFake :: MonadIO m => String -> Entity Game -> m [Key MoveEval]
 storeEvaluationIOFake = storeEvaluationIOHelper Pgn.gameSummariesFake
+
 
 -- | Adds structured player ratings to the database.
 -- These ratings are already stored in raw format as part of the 
@@ -181,13 +199,14 @@ ratingQuery :: Text
 ratingQuery = [r|
 SELECT player_id, extract(year from date) as year, extract(month from date) as month, avg(rating)::Int
 FROM (
-  SELECT player_black_id as player_id, date, CAST((COALESCE(value,'0')) AS INTEGER) as rating
+  SELECT player_black_id as player_id, date, COALESCE(CONVERT_TO_INTEGER(VALUE), 0) as rating
   FROM game
   JOIN game_attribute ON game.id=game_attribute.game_id AND attribute='BlackElo' and value != ''
   UNION ALL
-  SELECT player_white_id as player_id, date, CAST((COALESCE(value,'0')) AS INTEGER) as rating
+  SELECT player_white_id as player_id, date, COALESCE(CONVERT_TO_INTEGER(VALUE), 0) as rating
   FROM game
   JOIN game_attribute ON game.id=game_attribute.game_id AND attribute='WhiteElo' and value != ''
+  WHERE value ~ E'^\\d+$'
 ) values
 WHERE rating > 0 and date is not null
 GROUP BY player_id, year, month
@@ -220,25 +239,52 @@ FROM game
 WHERE game.id not in (SELECT DISTINCT game_id from move_eval)
 |]
 
+sqlGamesOutdated :: Text
+sqlGamesOutdated = [r|
+SELECT ??
+FROM game
+WHERE 
+    game.id IN (
+      SELECT DISTINCT game_id FROM move_eval
+      WHERE engine_version !=?
+    )
+  AND
+    database_id = ?
+|]
+
 getGamesFromDB :: Bool -> DataAction [Entity Game]
 getGamesFromDB continueEval = do
   let query = if continueEval then sqlGamesUnevaluated else sqlGamesAll
   games :: [Entity Game] <- rawSql query []
   return games
 
-evalToRow :: Key Game -> [Pgn.MoveSummary] -> [MoveEval]
-evalToRow g ms = traceShow ("Move summary" ++ show ms) $ evalToRowColor g 1 Board.White ms
+latestEngine :: String
+latestEngine = "SF 14.1"
 
-evalToRowColor :: Key Game -> Int -> Board.Color -> [Pgn.MoveSummary] -> [MoveEval]
-evalToRowColor _ _ _ [] = []
-evalToRowColor g n Board.White (ms:rest) =
-  constructEvalMove g n True ms : evalToRowColor g n Board.Black rest
-evalToRowColor g n Board.Black (ms:rest) =
-  constructEvalMove g n False ms : evalToRowColor g (n + 1) Board.White rest
+getGamesOutdated :: String -> String -> DataAction [Entity Game]
+getGamesOutdated latestEngineName dbName = do
+    db <- PsP.getBy $ UniqueDatabaseName dbName
+    case db of 
+      Just dbResult -> do
+        let dbInt = PersistInt64 $ fromIntegral $ dbKeyInt $ entityKey dbResult
+        let params = [PersistText (Te.pack latestEngineName), dbInt]
+        results <- rawSql sqlGamesOutdated params
+        return results
+      Nothing -> return []
 
-constructEvalMove :: Key Game -> Int -> Bool -> Pgn.MoveSummary -> MoveEval
-constructEvalMove gm n isWhite (Pgn.MoveSummary mv mvBest evalMove evalBest fen) =
-  MoveEval gm n isWhite (Just mv) mvBest eval evalB mate mateB fen
+evalToRow :: Key Game -> [Pgn.MoveSummary] -> UTCTime -> [MoveEval]
+evalToRow g ms time = traceShow ("Move summary" ++ show ms) $ evalToRowColor g 1 Board.White ms time
+
+evalToRowColor :: Key Game -> Int -> Board.Color -> [Pgn.MoveSummary] -> UTCTime -> [MoveEval]
+evalToRowColor _ _ _ [] _ = []
+evalToRowColor g n Board.White (ms:rest) time =
+  constructEvalMove g n True ms time : evalToRowColor g n Board.Black rest time
+evalToRowColor g n Board.Black (ms:rest) time =
+  constructEvalMove g n False ms time : evalToRowColor g (n + 1) Board.White rest time
+
+constructEvalMove :: Key Game -> Int -> Bool -> Pgn.MoveSummary -> UTCTime -> MoveEval
+constructEvalMove gm n isWhite (Pgn.MoveSummary mv mvBest evalMove evalBest fen comp) time =
+  MoveEval gm n isWhite (Just mv) mvBest eval evalB mate mateB (Just comp) fen latestEngine time
   where
     (eval, mate) = (evalInt evalMove, evalMate evalMove)
     (evalB, mateB) = (evalInt evalBest, evalMate evalBest)

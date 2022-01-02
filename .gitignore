@@ -1,5 +1,7 @@
 *.sw*
 .stack*/
+*.lock
+data/
 site_key*
 cookies.txt
 log/
@@ -17,3 +19,6 @@ snaplets/postgresql-simple
 snaplets/service
 snaplets/site_key.txt
 snaplets/snaplets
+*.dump
+notes.md
+

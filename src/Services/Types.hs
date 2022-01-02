@@ -21,6 +21,7 @@ share [mkPersist sqlSettings, mkMigrate "migrateAll"] [persistLowerCase|
 Database json
   name String
   isPublic Bool
+  userId String Maybe
   UniqueDatabaseName name
 
 DatabasePermission json
@@ -72,7 +73,10 @@ MoveEval json
   evalBest Int Maybe
   mate Int Maybe
   mateBest Int Maybe
+  complexityGB Int Maybe
   fen String
+  engineVersion String "default='SF 10'"
+  created UTCTime
   UniqueMoveEval gameId moveNumber isWhite
 
 Player json

@@ -20,9 +20,13 @@ import Text.RawString.QQ (r)
 
 type GameList = [Int]
 
+substituteName :: String -> T.Text -> GameList -> T.Text
+substituteName name template ints = TL.toStrict $ substitute template cont
+  where cont = context [(name, listToInClause ints)]
+
 substituteGameList :: T.Text -> GameList -> T.Text
-substituteGameList template ints = TL.toStrict $ substitute template cont
-  where cont = context [("gameList", listToInClause ints)]
+substituteGameList = substituteName "gameList"
+
 
 -- | Create 'Context' from association list.
 context :: [(String, String)] -> Context
@@ -57,6 +61,20 @@ FROM numberTournaments
 CROSS JOIN numberGames
 CROSS JOIN numberGameEvals
 CROSS JOIN numberMoveEvals
+|]
+
+-- Database overview
+dbQuery :: T.Text
+dbQuery = [r| 
+SELECT 
+  db.name as database
+, count(distinct g.id) as games
+, count(distinct me.game_id) as games_evaluated
+, sum((me.id is not null)::Int) as number_evals
+FROM game g 
+JOIN database db ON db.id=g.database_id
+LEFT JOIN move_eval me ON g.id=me.game_id
+GROUP BY db.name;
 |]
 
 
