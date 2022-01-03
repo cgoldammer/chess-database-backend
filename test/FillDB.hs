@@ -1,3 +1,5 @@
+module FillDB where
+
 import Options.Applicative
 
 import AppTypes

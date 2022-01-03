@@ -18,6 +18,7 @@ module Services.Service where
 
 import Control.Lens (_1, makeLenses, over, _head, _tail, each)
 import qualified Control.Lens as Lens ((^.))
+import Control.Exception (Exception, SomeException, throw)
 import Control.Monad (when)
 import Control.Monad.State.Class (get, gets)
 import Data.Char (toLower)
@@ -58,6 +59,12 @@ import System.Environment (lookupEnv)
 import Snap.Snaplet.Auth
   ( userLogin
   , currentUser
+  , createUser
+  , forceLogin
+  , withBackend
+  , AuthUser(..)
+  , UserId(..)
+  , IAuthBackend(..)
   , AuthManager(..))
 
 import Control.Concurrent
@@ -280,19 +287,49 @@ currentUserName :: Handler b (Service b) (Maybe String)
 currentUserName = do
   lens <- gets _serviceAuth
   user <- withTop lens currentUser
-  -- with serviceAuth currentUser
-  
-  -- man <- gets _serviceAuth
-  -- return undefined
-  -- let user = activeUser $ view snapletValue man
   let login = fmap (T.unpack . userLogin) user
   return login
-  -- return login
-  
 
-changeUser :: Maybe String -> Handler b (Service b) ()
-changeUser _ = do
-  return ()
+type UserName = String
+data LoginException = LoginUserDoesNotExist UserName deriving Show
+instance Exception LoginException
+
+getAuthUserFromEmail :: String -> Handler b (Service b) (Maybe AuthUser)
+getAuthUserFromEmail userId = do
+  auth <- gets _serviceAuth
+  userIdInt <- getUserId userId
+  case userIdInt of
+    Nothing -> return Nothing
+    Just i -> do
+      let userId' = UserId (T.pack (show i))
+      au <- withTop auth $ withBackend $ \r -> liftIO $ lookupByUserId r userId'
+      return au
+  
+forceLoginFromEmail :: String -> Handler b (Service b) (Maybe AppUser)
+forceLoginFromEmail userId = do
+  auth <- gets _serviceAuth
+  au <- getAuthUserFromEmail userId
+  case au of
+    Nothing -> return Nothing
+    Just a -> withTop auth $ do
+      forceLogin a 
+      return Nothing
+  getMyUser
+
+selectUserId :: T.Text
+selectUserId = T.pack $ "SELECT id FROM snap_auth_user WHERE login = ?"
+
+type UserIdType = (Single Int)
+
+getUserId :: String -> Handler b (Service b) (Maybe Int)
+getUserId userId = do
+  let arguments = [PersistText (T.pack userId)]
+  userIds :: [UserIdType] <- runPersist $ rawSql selectUserId arguments
+  return $ fmap unSingle $ listToMaybe userIds
+
+-- changeUser :: Maybe String -> Handler b (Service b) ()
+-- changeUser _ = do
+--   return ()
 
 instance HasPersistPool (Handler b (Service b)) where
   getPersistPool = with serviceDB getPersistPool
@@ -822,6 +859,19 @@ getResultPercentages searchData = do
 nothingHandler :: Handler b (Service b) ()
 nothingHandler = return ()
 
+createFullUser :: String -> String -> Handler b (Service b) ()
+createFullUser userEmail password = do
+  lens <- gets _serviceAuth
+  res <- withTop lens $ createUser (T.pack userEmail) (B.pack password)
+  case res of
+    Right authUser -> do
+      let usId = userLogin authUser
+      createAppUser usId
+      withTop lens (forceLogin authUser)
+    -- Left af -> return ()
+  return ()
+  
+
 -- |Create a default app user. The id for the app user is the user name.
 createAppUser :: T.Text -> Handler b (Service b) ()
 createAppUser userLoginCreate = do
@@ -832,12 +882,8 @@ createAppUser userLoginCreate = do
 -- |Obtain the app user by user name.
 selectUser :: MonadIO m => Maybe T.Text -> SqlPersistT m (Maybe AppUser)
 selectUser (Just userId) = do
-  liftIO $ print $ show userId
   users <- select $ from $ \usr -> do
     where_ $ usr ^. AppUserUserId ==. val (T.unpack userId)
     return usr
   return $ entityVal <$> listToMaybe users
 selectUser Nothing = return Nothing
-
-userFields :: [B.ByteString]
-userFields = fmap B.pack ["name"]

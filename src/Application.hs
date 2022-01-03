@@ -7,6 +7,7 @@ module Application
   , app
   , routes
   , auth
+  , service
   ) where
 
 import AppTypes
@@ -142,7 +143,7 @@ handleLoginSubmit = do
 
 resetUser :: Handler App App ()
 resetUser = do
-  with service $ S.changeUser Nothing
+  withTop auth logout
   return ()
 
 handleLogout :: Handler App (AuthManager App) ()

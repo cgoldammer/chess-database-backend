@@ -118,6 +118,9 @@ TestThing json
   name String
 |]
 
+instance Eq AppUser
+  where g == g' = appUserUserId g == appUserUserId g'
+
 instance Show Database
   where show = show . toJSON
 
