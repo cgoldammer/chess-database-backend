@@ -1,0 +1,81 @@
+name: chess-backend
+version: 0.4
+description: Backend for chessinsights.org
+maintainer: Chris Goldammer (goldammer.christian@gmail.com)
+
+dependencies:
+  - base                      >= 4.6 && < 4.14
+  - snap                      >= 1.0.4.1
+  - snap-core                 >= 1.0.4.1
+  - snap-server               >= 1.0.4.1
+  - servant-snap
+  - servant
+  - esqueleto
+  - heist
+
+  - postgresql-simple
+  - persistent
+  - persistent-template
+  - persistent-postgresql
+  - snaplet-persistent
+  - snaplet-postgresql-simple
+  - esqueleto
+
+  - chess
+
+  - attoparsec
+  - parsec
+  - string-conversions
+  - raw-strings-qq
+  - bytestring
+  - text
+  - aeson
+
+  - mtl
+  - monad-logger
+  - monad-control
+  - comonad
+  - transformers
+  - lens-tutorial
+  - time
+  - map-syntax
+  - containers
+
+  - lens
+  - resourcet
+  - conduit
+  - js-jquery
+  - configurator
+  - turtle
+  - system-filepath
+  - template
+
+  - http-client
+  - http-client-tls
+  - smtp-mail >= 0.3.0.0
+  - mime-mail >= 0.5.0
+  - mime-mail-ses >= 0.4.3
+
+  - listsafe
+  - either
+  - split
+  - random
+  - random-shuffle
+  - directory
+
+executable:
+  main: Main.hs
+  source-dirs: src
+
+tests:
+  spec:
+    main: Spec.hs
+    source-dirs:
+      - test
+      - src
+    dependencies:
+      - hspec
+      - QuickCheck
+      - HUnit
+      - hspec-snap
+      - optparse-applicative

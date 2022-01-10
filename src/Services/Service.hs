@@ -153,7 +153,7 @@ type ChessApi m =
 chessApi :: Proxy (ChessApi (Handler b (Service b)))
 chessApi = Proxy
 
-apiServer :: Server (ChessApi (Handler b (Service b))) (Handler b (Service b))
+-- apiServer :: Server (ChessApi (Handler b (Service b))) (Handler b (Service b))
 apiServer =
   getMyUser :<|> 
   validatedHandler getPlayers :<|> 
