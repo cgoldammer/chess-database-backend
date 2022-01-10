@@ -61,6 +61,7 @@ import Snap.Snaplet.Auth
   , currentUser
   , createUser
   , forceLogin
+  , logout
   , withBackend
   , AuthUser(..)
   , UserId(..)
@@ -287,7 +288,7 @@ currentUserName :: Handler b (Service b) (Maybe String)
 currentUserName = do
   lens <- gets _serviceAuth
   user <- withTop lens currentUser
-  let login = fmap (T.unpack . userLogin) user
+  let login = fmap (T.unpack . userLogin) user :: Maybe String
   return login
 
 type UserName = String
@@ -312,6 +313,7 @@ forceLoginFromEmail userId = do
   case au of
     Nothing -> return Nothing
     Just a -> withTop auth $ do
+      logout
       forceLogin a 
       return Nothing
   getMyUser
@@ -781,6 +783,12 @@ data GameDataFormatted = GameDataFormatted {
   , gameDataPlayerWhite :: Entity Player
   , gameDataPlayerBlack :: Entity Player
   , gameDataAttributes :: [Entity GameAttribute]} deriving (Generic)
+
+instance Eq GameDataFormatted
+  where g == g' = gameDataGame g == gameDataGame g'
+
+instance Show GameDataFormatted
+  where show = fmap show gameDataGame 
 
 renameField :: String -> String -> String
 renameField toDrop s = lowerFirst $ drop (length toDrop) s

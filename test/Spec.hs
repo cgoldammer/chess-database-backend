@@ -21,6 +21,7 @@ import Data.Aeson.Types
 import Data.Time
 import Data.Time.Clock.POSIX
 import Data.Either.Combinators (rightToMaybe)
+import Control.Monad (void, when)
 
 import Services.Helpers
 import Test.Helpers as H
@@ -29,7 +30,7 @@ import Services.DatabaseHelpers as DBH
 import Services.Types
 import Services.Openings
 import qualified Test.Fixtures as Fix
-import Debug.Trace (trace)
+import Snap.Snaplet.Session (commitSession)
 
 import Data.Attoparsec.Text (parseOnly)
 
@@ -37,7 +38,7 @@ import AppTypes
 import qualified Application as App
 
 main = hspec $ do
-  -- testOpening
+  testOpening
   testUserHandling
   testApi
 
@@ -45,6 +46,9 @@ dbName :: String
 dbName = "test"
 
 settings = getSettings Test
+
+toTop :: Handler App.App (S.Service App.App) r -> Handler App.App App.App r
+toTop = withTop App.service
 
 testApi :: Spec
 testApi = Test.snap (route (App.routes True)) (App.app settings) $ beforeAll_ doIO $ do
@@ -55,105 +59,78 @@ testApi = Test.snap (route (App.routes True)) (App.app settings) $ beforeAll_ do
       dbDatabases :: [Entity Database] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [] []
       Test.shouldEqual (not (null dbDatabases)) True
 
---     it "the databases function returns the right results" $ do
---       -- Logging in as a new user that doesn't own any databases
---         username <- liftIO getTimeString
---         Test.eval $ loginForApi username
---         Test.eval S.nothingHandler
---         res <- Test.eval S.getDatabases
---         dbDatabases :: [Entity Database] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [(P.==.) DatabaseIsPublic True] []
---         Test.shouldEqual (L.length res) (L.length dbDatabases)
+    it "the databases function returns the right results" $ do
+      -- Logging in as a new user that doesn't own any databases
+        username <- liftIO getTimeString
+        Test.eval $ loginForApi username
+        res <- Test.eval $ toTop S.getDatabases
+        dbDatabases :: [Entity Database] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [(P.==.) DatabaseIsPublic True] []
+        Test.shouldEqual (L.length res) (L.length dbDatabases)
 
---     it "the eval averages are returned for every player" $ do
---       (_, players, dbGames) <- playerGameData dbName
---       res <- Test.eval $ S.gameEvaluations $ S.WrappedGameList $ fmap dbKey dbGames
---       Test.shouldEqual (L.length res) (L.length players)
+    it "the eval averages are returned for every player" $ do
+      (dbId, players, dbGames) <- playerGameData dbName
+      res <- Test.eval $ toTop $ S.gameEvaluations $ S.GameRequestData (dbKeyInt dbId) []
+      Test.shouldEqual (L.length res) (L.length players)
 
---     it "the move summaries are returned for every player" $ do
---       (_, players, dbGames) <- playerGameData dbName
---       res <- Test.eval $ S.gameEvaluations $ WrappedGameList $ fmap dbKey dbGames
---       Test.shouldEqual (L.length res) (L.length players)
+    it "one should only get games for the private databases that a user owns" $ do
+      userName :: String <- liftIO getTimeString
 
---     it "one should only get games for the private databases that a user owns" $ do
---       let userName = "testUser" :: String
---       let backendInsert row = liftIO $ H.inBackend (DBH.connString dbName) $ P.insert row
---       Test.eval $ loginForApi userName
---       user <- fromMaybe "" <$> Test.eval S.currentUserName
---       dbTime <- liftIO getTimeInt
---       db :: Key Database <- backendInsert $ Database ("temp" ++ show dbTime) False
---       dbp <- backendInsert $ DatabasePermission db user True True True
---       p <- backendInsert $ Player db "temp" "temp"
---       t <- backendInsert $ Tournament db "temp"
---       game <- backendInsert $ Game db p p 1 t "" Nothing Nothing
---       ga <- backendInsert $ GameAttribute game "test" "test"
---       let request = S.getGames $ GameRequestData (dbKeyInt db) []
---       games :: [GameDataFormatted] <- Test.eval request
---       Test.shouldEqual (L.length games) 1 
+      (games, gamesForNewUser) <- Test.eval $ do
+        let backendInsert row = liftIO $ H.inBackend (DBH.connString dbName) $ P.insert row
+        loginForApi userName
+        user <- fromMaybe "" <$> toTop S.currentUserName
 
---       Test.eval $ loginForApi "temp2"
---       gamesForNewUser <- Test.eval request
---       Test.shouldEqual (L.length gamesForNewUser) 0
+        db :: Key Database <- backendInsert $ Database ("temp" ++ userName) False (Just user)
+        dbp <- backendInsert $ DatabasePermission db user True True True
+        p <- backendInsert $ Player db "temp" "temp"
+        t <- backendInsert $ Tournament db "temp"
+        game <- backendInsert $ Game db p p 1 t "" Nothing Nothing
+        ga <- backendInsert $ GameAttribute game "test" "test"
 
---   describe "In the API," $ do
+        let request = toTop $ S.getGames $ GameRequestData (dbKeyInt db) []
+        games :: [GameDataFormatted] <- request
+        loginForApi $ userName ++ "_new"
+        gamesForNewUser <- request
+        return (games, gamesForNewUser)
 
---     it "databases should return what's public in the table" $ do 
---       -- Logging in as a user that doesn't own any databases
---       username <- liftIO getTimeString
---       Test.eval $ loginForApi username
---       Test.eval S.nothingHandler
---       res <- Test.get "/databases"
---       let apiDatabases = parseDB res
---       dbDatabases :: [Entity Database] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [(P.==.) DatabaseIsPublic True] []
---       let values = fromMaybe [] apiDatabases
---       Test.shouldEqual (L.length values) (L.length dbDatabases)
+      Test.shouldNotEqual games gamesForNewUser
+      Test.shouldEqual (L.length games) 1 
+      Test.shouldEqual (L.length gamesForNewUser) 0
 
---     it "a bad URL should 404" $ Test.get "/badApi" >>= Test.should404
+  describe "In the API," $ do
 
---     it "It should not return a user if no user is set" $ do
---       let userName = "testUser"
---       res <- Test.get "/user"
---       let isFound = L.isInfixOf userName $ show res
---       Test.shouldNotBeTrue isFound
+    it "databases should return what's public in the table" $ do 
+      -- Logging in as a user that doesn't own any databases
+      username <- liftIO getTimeString
+      apiDatabases <- Test.eval $ do
+        loginForApi username
+        toTop S.getDatabases
+      dbDatabases :: [Entity Database] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [(P.==.) DatabaseIsPublic True] []
+      Test.shouldEqual (L.length apiDatabases) (L.length dbDatabases)
 
---     it "It should return a user if it is set" $ do
---       let userName = "testUser" :: String
---       Test.eval $ loginForApi userName
---       res <- Test.get "/user"
---       let isFound = L.isInfixOf userName $ show res
---       Test.shouldBeTrue isFound
+    describe "If I query the function to get games then" $ do
 
---     describe "If I query the function to get games then" $ do
+      it "it doesn't return anything for a non-existent database" $ do
+        dbDatabases :: [Entity Database] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [] []
+        dbTournaments :: [Entity Tournament] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [] []
+        let nonExistingDB = L.maximum (fmap dbKey dbTournaments) + 1
+        let tournamentIds = fmap dbKey dbTournaments
+        let requestData = GameRequestData nonExistingDB tournamentIds
+        res :: [GameDataFormatted] <- Test.eval $ toTop $ S.getGames requestData
+        Test.shouldEqual (L.length res) 0
 
---       it "it doesn't return anything for a non-existent database" $ do
---         dbDatabases :: [Entity Database] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [] []
---         dbTournaments :: [Entity Tournament] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [] []
---         let nonExistingDB = L.maximum (fmap dbKey dbTournaments) + 1
---         let tournamentIds = fmap dbKey dbTournaments
---         let requestData = GameRequestData nonExistingDB tournamentIds
---         res :: [GameDataFormatted] <- Test.eval $ S.getGames requestData
---         Test.shouldEqual (L.length res) 0
-
---       it "it does return values for a database that has games" $ do
---         dbDatabases :: [Entity Database] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [] []
---         dbTournaments :: [Entity Tournament] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [] []
---         dbGames :: [Entity Game] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [] []
---         Test.shouldBeTrue (length dbGames > 0)
---         let firstGame = L.head dbGames 
---         let gamesForDB = L.filter (\v -> gameDatabaseId (entityVal v) == gameDatabaseId (entityVal firstGame)) dbGames
---         let firstGameInt = L.head $ catMaybes $ fmap keyInt $ P.keyToValues $ gameDatabaseId $ entityVal firstGame
---         let tournamentIds = fmap dbKey dbTournaments
---         let requestData = GameRequestData firstGameInt tournamentIds
---         res <- Test.eval $ S.getGames requestData
---         Test.shouldEqual (L.length res) (L.length gamesForDB)
-
-
-
--- registerTestUser :: Handler App.App App.App (Either AuthFailure AuthUser)
--- registerTestUser = with App.auth $ registerUser (B.pack "hi") (B.pack "you")
-
-parseDB :: Test.TestResponse -> Maybe [Entity Database]
-parseDB (Test.Json _ bs) = decode bs
-parseDB _ = Nothing
+      it "it does return values for a database that has games" $ do
+        dbDatabases :: [Entity Database] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [] []
+        dbTournaments :: [Entity Tournament] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [] []
+        dbGames :: [Entity Game] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [] []
+        Test.shouldBeTrue (length dbGames > 0)
+        let firstGame = L.head dbGames 
+        let gamesForDB = L.filter (\v -> gameDatabaseId (entityVal v) == gameDatabaseId (entityVal firstGame)) dbGames
+        let firstGameInt = L.head $ catMaybes $ fmap keyInt $ P.keyToValues $ gameDatabaseId $ entityVal firstGame
+        let tournamentIds = fmap dbKey dbTournaments
+        let requestData = GameRequestData firstGameInt tournamentIds
+        res <- Test.eval $ toTop $ S.getGames requestData
+        Test.shouldEqual (L.length res) (L.length gamesForDB)
 
 -- Setting up the database fixtures. This function is time-intensive, and run
 -- once before a set of tests is executed. These tests do not modify the data.
@@ -165,7 +142,6 @@ doIO = do
   dbDatabases :: [Entity Database] <- H.inBackend (DBH.connString dbName) $ selectList [] []
 
   let alreadyRun = False -- length dbDatabases > 0
-
   let runEval = True
   let onlyContinueEval = False
   let settings = Fix.FixtureSettings dbName runEval onlyContinueEval
@@ -174,82 +150,92 @@ doIO = do
 
 defaultDBName = "dummy games"
 
-getTimeInt :: IO Int
-getTimeInt = getCurrentTime >>= pure . (1000*) . utcTimeToPOSIXSeconds >>= pure . round
+
+getDefaultDBId = fmap (P.entityKey . L.head) $ liftIO $ H.inBackend (DBH.connString dbName) $ selectList [(P.==.) DatabaseName defaultDBName] []
+
+expectedTest text expected parse = do
+  let result = parseOnly parse $ pack text
+  result `shouldBe` expected
+
+
+playerGameData dbName = do
+  defaultDBId <- getDefaultDBId
+  players :: [Entity Player] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [(P.==.) PlayerDatabaseId defaultDBId] []
+  dbGames :: [Entity Game] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [(P.==.) GameDatabaseId defaultDBId] []
+  return (defaultDBId, players, dbGames)
+
+testOpening :: Spec
+testOpening = describe "The opening module" $ do
+
+  it "can correctly parse the code" $ 
+    expectedTest "A00" (Right "A00") openingCodeParser
+
+  it "can parse a simple opening name" $ 
+    expectedTest "Test' Opening" (Right "Test' Opening") openingNameParser
+
+  it "can parse a incorrect opening name" $ 
+    expectedTest "Test' Opening\n" (Right "Test' Opening") openingNameParser
+
+  it "can parse an opening name with comments" $ 
+    expectedTest "Test' Opening; comments" (Right "Test' Opening") openingNameParser
+
+  it "can parse a game move" $ 
+    expectedTest "1. e4 1/2" (Right "1. e4") openMoveParser
+
+  it "can parse the game list" $ 
+    expectedTest "A00 A\n1.a3 1/2" (Right (ListData "A00" "A" "1.a3")) parseListData
+
+  it "can parse the game list with newlines" $ 
+    expectedTest "A00 A\n1.a3 1/2\n\n\n" (Right (ListData "A00" "A" "1.a3")) parseListData
 
 getTimeString :: IO String
 getTimeString = fmap show getTimeInt
 
--- getDefaultDBId = fmap (P.entityKey . L.head) $ liftIO $ H.inBackend (DBH.connString dbName) $ selectList [(P.==.) DatabaseName defaultDBName] []
-
--- expectedTest text expected parse = do
---   let result = parseOnly parse $ pack text
---   result `shouldBe` expected
+getTimeInt :: IO Int
+getTimeInt = getCurrentTime >>= pure . (1000*) . utcTimeToPOSIXSeconds >>= pure . round
 
 
--- playerGameData dbName = do
---   defaultDBId <- getDefaultDBId
---   players :: [Entity Player] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [(P.==.) PlayerDatabaseId defaultDBId] []
---   dbGames :: [Entity Game] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [(P.==.) GameDatabaseId defaultDBId] []
---   return (defaultDBId, players, dbGames)
 
--- testOpening :: Spec
--- testOpening = describe "The opening module" $ do
+getParams :: IO [(B.ByteString, B.ByteString)]
+getParams = do
+  userName :: String <- liftIO getTimeString
+  return [("login", B.pack userName), ("password", "password")]
 
---   it "can correctly parse the code" $ 
---     expectedTest "A00" (Right "A00") openingCodeParser
+loginForApi userName = toTop $ do
+  S.createFullUser userName "password"
+  S.forceLoginFromEmail userName
 
---   it "can parse a simple opening name" $ 
---     expectedTest "Test' Opening" (Right "Test' Opening") openingNameParser
+instance Test.HasSession App.App where
+  getSessionLens = App.sess
 
---   it "can parse a incorrect opening name" $ 
---     expectedTest "Test' Opening\n" (Right "Test' Opening") openingNameParser
-
---   it "can parse an opening name with comments" $ 
---     expectedTest "Test' Opening; comments" (Right "Test' Opening") openingNameParser
-
---   it "can parse a game move" $ 
---     expectedTest "1. e4 1/2" (Right "1. e4") openMoveParser
-
---   it "can parse the game list" $ 
---     expectedTest "A00 A\n1.a3 1/2" (Right (ListData "A00" "A" "1.a3")) parseListData
-
---   it "can parse the game list with newlines" $ 
---     expectedTest "A00 A\n1.a3 1/2\n\n\n" (Right (ListData "A00" "A" "1.a3")) parseListData
-
--- userName = "testUser2" :: B.ByteString
--- params = Test.params [("login", userName), ("password", "password")]
-
-loginForApi userName = do 
-  withTop App.service $ do
-    S.createFullUser userName "password"
-    S.forceLoginFromEmail userName
+loginModifier userName h = do
+  loginForApi userName
+  h
 
 testUserHandling :: Spec
 testUserHandling = Test.snap (route (App.routes True)) (App.app settings) $ do
-    describe "In the testing functions," $ do
-      it "running createFullUser adds an AppUser" $ do
-        userName :: String <- liftIO getTimeString
-        dbUsersBefore :: [Entity AppUser] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [] []
-        Test.eval $ withTop App.service $ S.createFullUser userName "password"
-        dbUsersAfter :: [Entity AppUser] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [] []
-        Test.shouldEqual ((length dbUsersBefore) + 1) (length dbUsersAfter)
+  describe "In the user handling ," $ do
+    it "getting user name works" $ do
+      userName :: String <- liftIO getTimeString
+      res <- Test.eval $ do
+        loginForApi userName
+        toTop S.currentUserName
+      Test.shouldEqual res (Just userName)
 
-      it "forcing a login works" $ do
-        userName :: String <- liftIO getTimeString
+    it "running createFullUser adds an AppUser" $ do
+      userName :: String <- liftIO getTimeString
+      dbUsersBefore :: [Entity AppUser] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [] []
+      Test.eval $ toTop $ S.createFullUser userName "password"
+      dbUsersAfter :: [Entity AppUser] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [] []
+      Test.shouldEqual ((length dbUsersBefore) + 1) (length dbUsersAfter)
 
-        runUser <- Test.eval $ do
-          loginForApi userName
-          withTop App.service S.currentUserName
+    it "changing user works" $ do
+      userName :: String <- liftIO getTimeString
+      let userName2 = userName ++ "test"
 
-        Test.shouldEqual (Just userName) runUser
+      runUser <- Test.eval $ do
+        loginForApi userName
+        loginForApi userName2
+        toTop S.currentUserName
 
--- settings = getSettings Test
-
--- tests :: Spec
--- tests = Test.snap (route (App.routes True)) (App.app settings) $ describe "Application" $ it "Register should 200" $ Test.post "/register" params >>= Test.should200
-
--- runWithLogin :: String -> String -> Handler b b () -> Handler b b ()
--- runWithLogin name password handler = do
---   x <- handler
---   return ()
+      Test.shouldEqual (Just userName2) runUser

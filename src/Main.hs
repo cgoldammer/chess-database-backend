@@ -31,5 +31,6 @@ main :: IO ()
 main = do
   settings <- readSettings
   print settings
-  let config = setPort (appPort settings) defaultConfig
+  let config = setErrorLog (ConfigFileLog "error.txt") $ setAccessLog (ConfigFileLog "log.txt") $ setPort (appPort settings) defaultConfig
   serveSnaplet config $ app settings
+

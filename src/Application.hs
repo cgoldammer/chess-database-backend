@@ -8,6 +8,7 @@ module Application
   , routes
   , auth
   , service
+  , sess
   ) where
 
 import AppTypes
@@ -124,7 +125,6 @@ writeLoginSuccess :: Handler b (AuthManager b) ()
 writeLoginSuccess = do
   user <- currentUser
   let login = fmap (T.unpack . userLogin) user :: Maybe String
-  -- redirect "/"
   modifyResponse $ setResponseStatus 200 "Success"
   writeBS $ B.pack $ fromMaybe "" login
 
