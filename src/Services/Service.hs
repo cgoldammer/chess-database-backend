@@ -14,12 +14,12 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE PartialTypeSignatures #-}
+
 module Services.Service where
 
 import Control.Lens (_1, makeLenses, over, _head, _tail, each)
 import qualified Control.Lens as Lens ((^.))
 import Control.Exception (Exception, SomeException, throw)
-import Control.Monad (when)
 import Control.Monad.State.Class (get, gets)
 import Data.Char (toLower)
 import Data.Aeson (FromJSON, ToJSON, toJSON, eitherDecode, encode, genericToJSON, defaultOptions)
@@ -76,7 +76,7 @@ import Control.Concurrent
   , takeMVar
   , threadDelay
   )
-import Control.Monad (liftM2)
+import Control.Monad (liftM2, when, unless)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Data.Map (toList)
 import Data.Maybe (fromMaybe, isJust, listToMaybe)
@@ -211,7 +211,7 @@ sendEmail subject to body access secret = do
 -- We wrap the game list as a newtype so it can be passed nicely as JSON.
 -- The code would work without wrapping, but, due to HTML intriciacies, lists don't
 -- produce nice JSON, so the resulting URL would be extremely long.
-data WrappedGameList = WrappedGameList
+newtype WrappedGameList = WrappedGameList
   { gameList :: GameList
   } deriving (Generic, FromJSON, ToJSON)
 
@@ -235,18 +235,26 @@ validatedHandler ::
   => (q -> Handler b (Service b) d)
   -> Maybe (JSONEncoded q)
   -> Handler b (Service b) d
-validatedHandler = maybeHandler . validateRequestForDB
+validatedHandler = maybeHandlerJSON . validateRequestForDB
 
 -- Parsing the query parameters into JSON returns a `Maybe (JSONEncoded a)`. In practice,
 -- I'll usually have a function `h :: a -> Handler b Service d`, so this function
 -- creates the required handler from h and returning the monoid `mempty` if
 -- the query could not get parsed
-maybeHandler ::
+maybeHandlerJSON ::
      HasDefault d
   => (a -> Handler b (Service b) d)
   -> Maybe (JSONEncoded a)
   -> Handler b (Service b) d
-maybeHandler h = maybe (return defaultVal) (h . unJSONEncoded)
+maybeHandlerJSON h = maybe (return defaultVal) (h . unJSONEncoded)
+
+maybeHandler ::
+     HasDefault d
+  => (a -> Handler b (Service b) d)
+  -> Maybe a
+  -> Handler b (Service b) d
+maybeHandler h = maybe (return defaultVal) h
+
 
 data TestData = TestData
   { testInt :: Int
@@ -292,34 +300,27 @@ currentUserName = do
   return login
 
 type UserName = String
-data LoginException = LoginUserDoesNotExist UserName deriving Show
+newtype LoginException = LoginUserDoesNotExist UserName deriving Show
 instance Exception LoginException
 
 getAuthUserFromEmail :: String -> Handler b (Service b) (Maybe AuthUser)
 getAuthUserFromEmail userId = do
   auth <- gets _serviceAuth
   userIdInt <- getUserId userId
-  case userIdInt of
-    Nothing -> return Nothing
-    Just i -> do
-      let userId' = UserId (T.pack (show i))
-      au <- withTop auth $ withBackend $ \r -> liftIO $ lookupByUserId r userId'
-      return au
-  
+
+  let lookup i = withTop auth $ withBackend $ \r -> liftIO $ lookupByUserId r $ UserId (T.pack (show i))
+  maybeHandler lookup userIdInt
+
 forceLoginFromEmail :: String -> Handler b (Service b) (Maybe AppUser)
 forceLoginFromEmail userId = do
   auth <- gets _serviceAuth
   au <- getAuthUserFromEmail userId
-  case au of
-    Nothing -> return Nothing
-    Just a -> withTop auth $ do
-      logout
-      forceLogin a 
-      return Nothing
+  let forceLoginHandler a = withTop auth $ logout >> forceLogin a >> return Nothing
+  maybeHandler forceLoginHandler au
   getMyUser
-
+  
 selectUserId :: T.Text
-selectUserId = T.pack $ "SELECT id FROM snap_auth_user WHERE login = ?"
+selectUserId = T.pack "SELECT id FROM snap_auth_user WHERE login = ?"
 
 type UserIdType = (Single Int)
 
@@ -327,11 +328,7 @@ getUserId :: String -> Handler b (Service b) (Maybe Int)
 getUserId userId = do
   let arguments = [PersistText (T.pack userId)]
   userIds :: [UserIdType] <- runPersist $ rawSql selectUserId arguments
-  return $ fmap unSingle $ listToMaybe userIds
-
--- changeUser :: Maybe String -> Handler b (Service b) ()
--- changeUser _ = do
---   return ()
+  return $ unSingle <$> listToMaybe userIds
 
 instance HasPersistPool (Handler b (Service b)) where
   getPersistPool = with serviceDB getPersistPool
@@ -349,6 +346,9 @@ data DataSummary = DataSummary {
 
 class HasDefault a where
   defaultVal :: a 
+
+instance HasDefault (Maybe a) where
+  defaultVal = Nothing
 
 instance HasDefault [a] where
   defaultVal = []
@@ -387,12 +387,12 @@ getDatabaseStats = do
   dbs <- getDatabases
   let dbKeys = fmap (dbKeyInt . entityKey) dbs
   let sub = substituteName "databases"
-  let query = (sub dbQuery dbKeys)
+  let query = sub dbQuery dbKeys
   results :: [DBQueryType] <- runPersist $ rawSql query []
   return $ fmap toDBResults results
 
 
-data DefaultSearchData = DefaultSearchData { searchDB :: Int } deriving (Generic, FromJSON, ToJSON, Show)
+newtype DefaultSearchData = DefaultSearchData { searchDB :: Int } deriving (Generic, FromJSON, ToJSON, Show)
 type QueryType = (Single Int, Single Int, Single Int, Single Int)
 
 getDataSummary :: DefaultSearchData -> Handler b (Service b) DataSummary
@@ -555,7 +555,7 @@ addEvaluations :: EvaluationRequest -> Handler b (Service b) ()
 addEvaluations request = do
   let keyForDB = intToKeyDB $ evaluationDB request
   canWrite <- canWriteToDB keyForDB
-  when (not canWrite) $ fail "wrong permission"
+  unless canWrite $ fail "wrong permission"
 
   let overwrite = evaluationOverwrite request
   dbName <- getDBName
@@ -576,7 +576,7 @@ doNothing :: IO ()
 doNothing = return ()
 
 runTask :: Task -> IO ()
-runTask (Task _ games dbName _) = sequenceA (fmap (TF.storeEvaluationIO dbName) games) >> doNothing
+runTask (Task _ games dbName _) = traverse (TF.storeEvaluationIO dbName) games >> doNothing
 
 -- The thread handler to run evaluations. The idea here is that
 -- we want to be able to asynchronously add evaluation tasks as they come
@@ -654,7 +654,7 @@ uploadDB upload = do
       dbName <- getDBName
       currentUserEvaluated :: Maybe String <- currentUserName
       (db, results) <- liftIO $ readTextIntoDB dbName name text False currentUserEvaluated
-      runPersist $ transactionSave
+      runPersist transactionSave
       addDBPermission db currentUserEvaluated
       -- Storing evaluations for the database in an asynchronous thread.
       addEvaluations (EvaluationRequest (dbKeyInt db) False)
@@ -679,7 +679,7 @@ data GameRequestData = GameRequestData {
   , gameRequestTournaments :: [Int]
 } deriving (Generic, FromJSON, ToJSON)
 
-data MoveEvaluationRequest = MoveEvaluationRequest {
+newtype MoveEvaluationRequest = MoveEvaluationRequest {
   moveEvalGames :: GameList
 } deriving (Show, Generic, FromJSON)
 
@@ -723,8 +723,7 @@ notAlreadyLosing dat = evalWithColor >= (-evalCutoff)
 moveEvaluationFromIdHandler :: Ids -> Handler b (Service b) [MoveEvaluationData]
 moveEvaluationFromIdHandler (Ids db values) = do
   let keyDB = intToKeyDB db
-  evals <- runPersist $ getMoveEvaluationData False keyDB (fmap intToKeyGame values)
-  return evals
+  runPersist $ getMoveEvaluationData False keyDB (fmap intToKeyGame values)
 
 moveEvaluationHandler :: GameRequestData -> Handler b (Service b) [MoveEvaluationData]
 moveEvaluationHandler grd = do
