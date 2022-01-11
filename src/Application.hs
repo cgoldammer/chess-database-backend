@@ -100,8 +100,7 @@ app settings =
       initPersistAuthManager sess (persistPool $ view snapletValue d)
 
     let user = view snapletValue a
-    let login = fmap (T.unpack . userLogin) $ activeUser user
-    liftIO $ print $ "User" ++ show login
+    let login = T.unpack . userLogin <$> activeUser user
 
     serviceSnaplet <- nestSnaplet "api" service $ S.serviceInit dbName auth
     addRoutes $ routes $ showLogin settings
@@ -182,7 +181,7 @@ handleNewUser = do
 getProperty :: String -> Map B.ByteString [B.ByteString] -> Maybe T.Text
 getProperty name queryMap =
   fmap (T.pack . B.unpack) $
-  join $ listToMaybe <$> Map.lookup (B.pack name) queryMap
+  listToMaybe =<< Map.lookup (B.pack name) queryMap
 
 resetWithUser :: T.Text -> Handler b (AuthManager b) ()
 resetWithUser login = do
@@ -212,7 +211,6 @@ resetPassForUser manager token user newPass = do
     let login = userLogin user
     clearPasswordResetToken login
     redirect "/snap_prod/passwordchangegood"
-  return ()
 
 resetPasswordHandler :: Handler b (AuthManager b) ()
 resetPasswordHandler = do
