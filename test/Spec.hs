@@ -67,61 +67,46 @@ insertUserData userName = do
 
   return db
 
+nothingHandlerTest = toTop S.nothingHandler
+
+loginAsAnotherRandomUser = do
+  userName <- liftIO getTimeString
+  loginForApi userName
+
+
+getDBResults handler modifierAfterwards getKeys = Test.eval $ do
+  userName <- liftIO getTimeString
+  db <- insertUserData userName
+  modifierAfterwards
+  res <- toTop handler
+  let keyUser = dbKeyInt db
+  let filtered = filter (==keyUser) $ fmap getKeys res
+  return $ length filtered
+
 testApi :: Spec
 testApi = Test.snap (route (App.routes True)) (App.app settings) $ beforeAll_ doIO $ do
 
   describe "In the database functions," $ do
 
     it "the databases functions returns the personal DB if logged in" $ do
-      userName <- liftIO getTimeString
-      (db, res) <- Test.eval $ do
-        db <- insertUserData userName
-        res <- toTop S.getDatabases
-        return (db, res)
-
-      let keys = fmap (dbKeyInt . entityKey) res
-      let keyUser = dbKeyInt db
-      let filtered = filter (==keyUser) keys
-      Test.shouldEqual (length filtered) 1
+      overlap <- getDBResults S.getDatabases nothingHandlerTest (dbKeyInt . entityKey)
+      Test.shouldEqual overlap 1
 
     it "the databases functions does not return the personal DB if logged out" $ do
-      userName <- liftIO getTimeString
-      (db, res) <- Test.eval $ do
-        db <- insertUserData userName
-        App.resetUser
-        res <- toTop S.getDatabases
-        return (db, res)
-
-      let keys = fmap (dbKeyInt . entityKey) res
-      let keyUser = dbKeyInt db
-      let filtered = filter (==keyUser) keys
-      Test.shouldEqual (length filtered) 0
-
+      overlap <- getDBResults S.getDatabases App.resetUser (dbKeyInt . entityKey)
+      Test.shouldEqual overlap 0
 
     it "the database stats functions returns the personal DB if logged in" $ do
-      userName <- liftIO getTimeString
-      (db, res) <- Test.eval $ do
-        db <- insertUserData userName
-        res <- toTop S.getDatabaseStats
-        return (db, res)
-
-      let keys = fmap dbResultId res
-      let keyUser = dbKeyInt db
-      let filtered = filter (==keyUser) keys
-      Test.shouldEqual (length filtered) 1
+      overlap <- getDBResults S.getDatabaseStats nothingHandlerTest dbResultId
+      Test.shouldEqual overlap 1
 
     it "the database stats functions does not return the personal DB if logged out" $ do
-      userName <- liftIO getTimeString
-      (db, res) <- Test.eval $ do
-        db <- insertUserData userName
-        App.resetUser
-        res <- toTop S.getDatabaseStats
-        return (db, res)
+      overlap <- getDBResults S.getDatabaseStats App.resetUser dbResultId
+      Test.shouldEqual overlap 0
 
-      let keys = fmap dbResultId res
-      let keyUser = dbKeyInt db
-      let filtered = filter (==keyUser) keys
-      Test.shouldEqual (length filtered) 0
+    it "the database stats functions does not return the personal DB if logged in as another user" $ do
+      overlap <- getDBResults S.getDatabaseStats loginAsAnotherRandomUser dbResultId
+      Test.shouldEqual overlap 0
 
     it "the eval averages are returned for every player" $ do
       (dbId, players, dbGames) <- playerGameData dbName
