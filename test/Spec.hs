@@ -45,27 +45,83 @@ main = hspec $ do
 dbName :: String
 dbName = "test"
 
+connStringTest = DBH.connString dbName
+inBackendTest = H.inBackend connStringTest
+
 settings = getSettings Test
 
 toTop :: Handler App.App (S.Service App.App) r -> Handler App.App App.App r
 toTop = withTop App.service
+
+insertUserData userName = do
+  let backendInsert row = liftIO $ inBackendTest $ P.insert row
+  loginForApi userName
+  user <- fromMaybe "" <$> toTop S.currentUserName
+
+  db :: Key Database <- backendInsert $ Database ("temp" ++ userName) False (Just user)
+  dbp <- backendInsert $ DatabasePermission db user True True True
+  p <- backendInsert $ Player db "temp" "temp"
+  t <- backendInsert $ Tournament db "temp"
+  game <- backendInsert $ Game db p p 1 t "" Nothing Nothing
+  ga <- backendInsert $ GameAttribute game "test" "test"
+
+  return db
 
 testApi :: Spec
 testApi = Test.snap (route (App.routes True)) (App.app settings) $ beforeAll_ doIO $ do
 
   describe "In the database functions," $ do
 
-    it "there was at least one database stored" $ do
-      dbDatabases :: [Entity Database] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [] []
-      Test.shouldEqual (not (null dbDatabases)) True
+    it "the databases functions returns the personal DB if logged in" $ do
+      userName <- liftIO getTimeString
+      (db, res) <- Test.eval $ do
+        db <- insertUserData userName
+        res <- toTop S.getDatabases
+        return (db, res)
 
-    it "the databases function returns the right results" $ do
-      -- Logging in as a new user that doesn't own any databases
-        username <- liftIO getTimeString
-        Test.eval $ loginForApi username
-        res <- Test.eval $ toTop S.getDatabases
-        dbDatabases :: [Entity Database] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [(P.==.) DatabaseIsPublic True] []
-        Test.shouldEqual (L.length res) (L.length dbDatabases)
+      let keys = fmap (dbKeyInt . entityKey) res
+      let keyUser = dbKeyInt db
+      let filtered = filter (==keyUser) keys
+      Test.shouldEqual (length filtered) 1
+
+    it "the databases functions does not return the personal DB if logged out" $ do
+      userName <- liftIO getTimeString
+      (db, res) <- Test.eval $ do
+        db <- insertUserData userName
+        App.resetUser
+        res <- toTop S.getDatabases
+        return (db, res)
+
+      let keys = fmap (dbKeyInt . entityKey) res
+      let keyUser = dbKeyInt db
+      let filtered = filter (==keyUser) keys
+      Test.shouldEqual (length filtered) 0
+
+
+    it "the database stats functions returns the personal DB if logged in" $ do
+      userName <- liftIO getTimeString
+      (db, res) <- Test.eval $ do
+        db <- insertUserData userName
+        res <- toTop S.getDatabaseStats
+        return (db, res)
+
+      let keys = fmap dbResultId res
+      let keyUser = dbKeyInt db
+      let filtered = filter (==keyUser) keys
+      Test.shouldEqual (length filtered) 1
+
+    it "the database stats functions does not return the personal DB if logged out" $ do
+      userName <- liftIO getTimeString
+      (db, res) <- Test.eval $ do
+        db <- insertUserData userName
+        App.resetUser
+        res <- toTop S.getDatabaseStats
+        return (db, res)
+
+      let keys = fmap dbResultId res
+      let keyUser = dbKeyInt db
+      let filtered = filter (==keyUser) keys
+      Test.shouldEqual (length filtered) 0
 
     it "the eval averages are returned for every player" $ do
       (dbId, players, dbGames) <- playerGameData dbName
@@ -76,17 +132,7 @@ testApi = Test.snap (route (App.routes True)) (App.app settings) $ beforeAll_ do
       userName :: String <- liftIO getTimeString
 
       (games, gamesForNewUser) <- Test.eval $ do
-        let backendInsert row = liftIO $ H.inBackend (DBH.connString dbName) $ P.insert row
-        loginForApi userName
-        user <- fromMaybe "" <$> toTop S.currentUserName
-
-        db :: Key Database <- backendInsert $ Database ("temp" ++ userName) False (Just user)
-        dbp <- backendInsert $ DatabasePermission db user True True True
-        p <- backendInsert $ Player db "temp" "temp"
-        t <- backendInsert $ Tournament db "temp"
-        game <- backendInsert $ Game db p p 1 t "" Nothing Nothing
-        ga <- backendInsert $ GameAttribute game "test" "test"
-
+        db <- insertUserData userName
         let request = toTop $ S.getGames $ GameRequestData (dbKeyInt db) []
         games :: [GameDataFormatted] <- request
         loginForApi $ userName ++ "_new"
@@ -101,18 +147,18 @@ testApi = Test.snap (route (App.routes True)) (App.app settings) $ beforeAll_ do
 
     it "databases should return what's public in the table" $ do 
       -- Logging in as a user that doesn't own any databases
-      username <- liftIO getTimeString
+      userName <- liftIO getTimeString
       apiDatabases <- Test.eval $ do
-        loginForApi username
+        loginForApi userName
         toTop S.getDatabases
-      dbDatabases :: [Entity Database] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [(P.==.) DatabaseIsPublic True] []
+      dbDatabases :: [Entity Database] <- liftIO $ inBackendTest $ selectList [(P.==.) DatabaseIsPublic True] []
       Test.shouldEqual (L.length apiDatabases) (L.length dbDatabases)
 
     describe "If I query the function to get games then" $ do
 
       it "it doesn't return anything for a non-existent database" $ do
-        dbDatabases :: [Entity Database] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [] []
-        dbTournaments :: [Entity Tournament] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [] []
+        dbDatabases :: [Entity Database] <- liftIO $ inBackendTest $ selectList [] []
+        dbTournaments :: [Entity Tournament] <- liftIO $ inBackendTest $ selectList [] []
         let nonExistingDB = L.maximum (fmap dbKey dbTournaments) + 1
         let tournamentIds = fmap dbKey dbTournaments
         let requestData = GameRequestData nonExistingDB tournamentIds
@@ -120,9 +166,9 @@ testApi = Test.snap (route (App.routes True)) (App.app settings) $ beforeAll_ do
         Test.shouldEqual (L.length res) 0
 
       it "it does return values for a database that has games" $ do
-        dbDatabases :: [Entity Database] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [] []
-        dbTournaments :: [Entity Tournament] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [] []
-        dbGames :: [Entity Game] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [] []
+        dbDatabases :: [Entity Database] <- liftIO $ inBackendTest $ selectList [] []
+        dbTournaments :: [Entity Tournament] <- liftIO $ inBackendTest $ selectList [] []
+        dbGames :: [Entity Game] <- liftIO $ inBackendTest $ selectList [] []
         Test.shouldBeTrue (length dbGames > 0)
         let firstGame = L.head dbGames 
         let gamesForDB = L.filter (\v -> gameDatabaseId (entityVal v) == gameDatabaseId (entityVal firstGame)) dbGames
@@ -132,14 +178,16 @@ testApi = Test.snap (route (App.routes True)) (App.app settings) $ beforeAll_ do
         res <- Test.eval $ toTop $ S.getGames requestData
         Test.shouldEqual (L.length res) (L.length gamesForDB)
 
+
 -- Setting up the database fixtures. This function is time-intensive, and run
 -- once before a set of tests is executed. These tests do not modify the data.
 -- Thus we want to set up this function that re-running it doesn't delete and
 -- re-insert the data, which shortens the time for running the tests
+
 doIO :: IO ()
 doIO = do
   let dbName = "test"
-  dbDatabases :: [Entity Database] <- H.inBackend (DBH.connString dbName) $ selectList [] []
+  dbDatabases :: [Entity Database] <- inBackendTest $ selectList [] []
 
   let alreadyRun = False -- length dbDatabases > 0
   let runEval = True
@@ -150,8 +198,7 @@ doIO = do
 
 defaultDBName = "dummy games"
 
-
-getDefaultDBId = fmap (P.entityKey . L.head) $ liftIO $ H.inBackend (DBH.connString dbName) $ selectList [(P.==.) DatabaseName defaultDBName] []
+getDefaultDBId = fmap (P.entityKey . L.head) $ liftIO $ inBackendTest $ selectList [(P.==.) DatabaseName defaultDBName] []
 
 expectedTest text expected parse = do
   let result = parseOnly parse $ pack text
@@ -160,8 +207,8 @@ expectedTest text expected parse = do
 
 playerGameData dbName = do
   defaultDBId <- getDefaultDBId
-  players :: [Entity Player] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [(P.==.) PlayerDatabaseId defaultDBId] []
-  dbGames :: [Entity Game] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [(P.==.) GameDatabaseId defaultDBId] []
+  players :: [Entity Player] <- liftIO $ inBackendTest  $ selectList [(P.==.) PlayerDatabaseId defaultDBId] []
+  dbGames :: [Entity Game] <- liftIO $ inBackendTest $ selectList [(P.==.) GameDatabaseId defaultDBId] []
   return (defaultDBId, players, dbGames)
 
 testOpening :: Spec
@@ -194,8 +241,6 @@ getTimeString = fmap show getTimeInt
 getTimeInt :: IO Int
 getTimeInt = getCurrentTime >>= pure . (1000*) . utcTimeToPOSIXSeconds >>= pure . round
 
-
-
 getParams :: IO [(B.ByteString, B.ByteString)]
 getParams = do
   userName :: String <- liftIO getTimeString
@@ -224,9 +269,9 @@ testUserHandling = Test.snap (route (App.routes True)) (App.app settings) $ do
 
     it "running createFullUser adds an AppUser" $ do
       userName :: String <- liftIO getTimeString
-      dbUsersBefore :: [Entity AppUser] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [] []
+      dbUsersBefore :: [Entity AppUser] <- liftIO $ inBackendTest  $ selectList [] []
       Test.eval $ toTop $ S.createFullUser userName "password"
-      dbUsersAfter :: [Entity AppUser] <- liftIO $ H.inBackend (DBH.connString dbName) $ selectList [] []
+      dbUsersAfter :: [Entity AppUser] <- liftIO $ inBackendTest $ selectList [] []
       Test.shouldEqual ((length dbUsersBefore) + 1) (length dbUsersAfter)
 
     it "changing user works" $ do

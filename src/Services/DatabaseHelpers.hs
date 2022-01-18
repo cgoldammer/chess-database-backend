@@ -6,9 +6,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE PolyKinds #-}
-{-# LANGUAGE TypeOperators #-}
 
 module Services.DatabaseHelpers where
 
@@ -18,13 +16,14 @@ import Data.Either (rights)
 import Data.Either.Combinators (rightToMaybe)
 import Data.List (intercalate)
 import Data.List.Split (chunksOf)
+import Data.Foldable (find)
 import Data.Maybe (fromJust, isJust, listToMaybe)
 import Text.Printf (printf)
 import qualified Data.Text as Te (Text, pack, intercalate)
 import qualified Data.Text.IO as TeIO (writeFile)
 import Data.Time (Day, fromGregorian)
 import qualified Filesystem.Path.CurrentOS as FS (fromText)
-import qualified Turtle as Tu (input, strict)
+import qualified Turtle as Tu (input, strict, Text)
 import Database.Persist
   ( Entity
   , Key
@@ -39,7 +38,6 @@ import Database.Persist
   )
 import Database.Persist.Postgresql (transactionSave)
 import Debug.Trace (trace)
-import qualified Turtle as Tu (Text)
 
 import qualified Chess.Pgn.Logic as Pgn
 import qualified Chess.Helpers as Helpers
@@ -171,11 +169,9 @@ resultDBFormat (Pgn.PgnResult Pgn.BlackWin) = -1
 resultDBFormat (Pgn.PgnResult Pgn.Draw) = 0
 resultDBFormat _ = 0
 
-getDate :: [Pgn.PgnTag] -> Maybe Day
-getDate tags =
-  join $
-  fmap (\(Pgn.PgnDate d) -> rightToMaybe (parseOnly dateStringParse (Te.pack d))) $
-  listToMaybe $ filter filterDate tags
+getDate :: [Pgn.PgnTag] -> Maybe Day 
+getDate tags = extractParse =<< find filterDate tags
+  where extractParse (Pgn.PgnDate d) = rightToMaybe $ parseOnly dateStringParse (Te.pack d)
 
 dateStringParse :: Parser Day
 dateStringParse = do
@@ -188,8 +184,8 @@ dateStringParse = do
 
 writeChunk :: String -> Int -> [Te.Text] -> IO ()
 writeChunk fileName fileNumber texts = do
-  let fullName = fileName ++ "_" ++ (printf "%05d" fileNumber) ++ ".pgn"
-  TeIO.writeFile fullName (Te.intercalate (Te.pack "\n") texts)
+  let fullName = fileName ++ "_" ++ printf "%05d" fileNumber ++ ".pgn"
+  TeIO.writeFile fullName $ Te.intercalate (Te.pack "\n") texts
   
 
 splittingHelper :: String -> Int -> IO ()
@@ -197,7 +193,7 @@ splittingHelper fileName number = do
   fileText <- Tu.strict $ Tu.input $ FS.fromText $ Te.pack fileName
 
   let splits = Pgn.splitIntoGames fileText
-  let chunks = zip [0..] $ (chunksOf number splits)
+  let chunks = zip [0..] $ chunksOf number splits
 
   mapM_ (uncurry (writeChunk fileName)) chunks
 

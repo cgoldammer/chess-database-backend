@@ -9,6 +9,7 @@ module Application
   , auth
   , service
   , sess
+  , resetUser
   ) where
 
 import AppTypes

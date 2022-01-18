@@ -23,10 +23,10 @@ import Database.Persist.Sql (Filter)
 import Prelude hiding (lookup)
 
 import Data.Either.Combinators (rightToMaybe)
-import Data.Foldable (fold)
+import Data.Foldable (fold, find)
 import qualified Data.List.Split as LS (splitOn)
 import Data.Map (Map, fromList, lookup)
-import Data.Maybe (catMaybes, listToMaybe)
+import Data.Maybe (catMaybes, listToMaybe, mapMaybe)
 import Data.Text (Text, pack, splitOn, unpack)
 import Database.Esqueleto hiding (get)
 import Filesystem.Path.CurrentOS (fromText)
@@ -59,7 +59,7 @@ type OpeningMap = Map Fen FullOpeningData
 
 
 parseOpenings :: Text -> [ListData]
-parseOpenings text = catMaybes $ fmap (rightToMaybe . parseOnly parseListData) split
+parseOpenings text = mapMaybe (rightToMaybe . parseOnly parseListData) split
   where split = splitOn "\r\n\r" text
 
 deleteOpenings :: DataAction ()
@@ -109,7 +109,7 @@ getVariation _ = Nothing
 -- wherever I spot them.
 simplifyLine :: String -> String
 simplifyLine line = maybe line snd maybeReplaced
-  where maybeReplaced = listToMaybe $ filter ((==line) . fst) lineRenames
+  where maybeReplaced = find ((== line) . fst) lineRenames
 
 lineRenames :: [(String, String)]
 lineRenames =
@@ -167,8 +167,7 @@ parseListData = do
   many1' space
   name :: String <- openingNameParser
   many1' endOfLine
-  moves <- openMoveParser
-  return $ ListData code name moves
+  ListData code name <$> openMoveParser
 
 openingNameParser :: Parser String
 openingNameParser = do

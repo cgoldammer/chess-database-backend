@@ -330,6 +330,10 @@ getUserId userId = do
   userIds :: [UserIdType] <- runPersist $ rawSql selectUserId arguments
   return $ unSingle <$> listToMaybe userIds
 
+-- changeUser :: Maybe String -> Handler b (Service b) ()
+-- changeUser _ = do
+--   return ()
+
 instance HasPersistPool (Handler b (Service b)) where
   getPersistPool = with serviceDB getPersistPool
 
@@ -368,19 +372,22 @@ instance QueryForDB GameRequestData where
 instance QueryForDB Ids where
   getDB = idDB
 
-type DBQueryType = (Single String, Single Int, Single Int, Single Int)
+type DBQueryType = (Single Int, Single String, Single Int, Single Int, Single Int)
 
 data DBResult = DBResult { 
-  dbResultName :: String
+  dbResultId :: Int
+, dbResultName :: String
 , dbResultGames :: Int
 , dbResultGamesEval :: Int
 , dbResultEvals :: Int
-} deriving (Generic, ToJSON)
+} deriving (Generic)
+
+instance ToJSON DBResult where
+  toJSON = genericToJSON defaultOptions { fieldLabelModifier = renameField "dbResult"}
 
 toDBResults :: DBQueryType -> DBResult
-toDBResults (Single name, Single numGames, Single numGamesEval, Single numEvals) =
-  DBResult name numGames numGamesEval numEvals
-
+toDBResults (Single id, Single name, Single numGames, Single numGamesEval, Single numEvals) =
+  DBResult id name numGames numGamesEval numEvals
 
 getDatabaseStats :: Handler b (Service b) [DBResult]
 getDatabaseStats = do

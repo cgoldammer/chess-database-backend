@@ -106,10 +106,7 @@ parseSet name folder = do
 
 filesDev :: [(String, [String])]
 filesDev = 
-  -- [ ("dummy games", ["dev/dummy_games.pgn"])
-  -- , ("tata small", ["dev/tata_small.pgn"])
-  -- [ ("wijk", ["dev/WijkaanZee2012.pgn"])
-  [ ("wijk", ["dev/rejkjavik2018.pgn"])
+  [ ("Rejkjavik small", ["dev/rejkjavik2018.pgn"])
   ]
 
 getFiles :: AppType -> IO [(String, [String])]
@@ -128,7 +125,7 @@ storeGamesIntoDB = do
 -- storeFile "dummy" "dev/dummy_games.pgn" "dev"
 storeFile :: MonadIO m => String -> String -> String -> m ()
 storeFile dbName chessDBName fileName = do
-  let fullName = "./data/games/" ++ fileName
+  let fullName = "/home/cg/data/chess-database-backend/games/" ++ fileName
   fileText <- Tu.strict $ Tu.input $ FS.fromText $ Te.pack fullName
   DatabaseHelpers.readTextIntoDB dbName chessDBName fileText True Nothing
   return ()
@@ -174,7 +171,7 @@ storeEvaluationIOHelper summaryFunction dbName dbGame = do
       liftIO $
         inBackend (connString dbName) $ do
           let rows = evalToRow (entityKey dbGame) summaries time
-          mapM deleteBy $ fmap getEvalKeys rows
+          mapM_ deleteBy $ fmap getEvalKeys rows
           k <- mapM insertBy rows
           return $ rights k
     Nothing -> return []
@@ -224,7 +221,6 @@ addRatings :: DataAction ()
 addRatings = do
   results :: [RatingQueryType] <- rawSql ratingQuery []
   mapM_ (insertBy . readRatingQuery) results
-  return ()
 
 sqlGamesAll :: Text
 sqlGamesAll = [r|
@@ -268,8 +264,7 @@ getGamesOutdated latestEngineName dbName = do
       Just dbResult -> do
         let dbInt = PersistInt64 $ fromIntegral $ dbKeyInt $ entityKey dbResult
         let params = [PersistText (Te.pack latestEngineName), dbInt]
-        results <- rawSql sqlGamesOutdated params
-        return results
+        rawSql sqlGamesOutdated params
       Nothing -> return []
 
 evalToRow :: Key Game -> [Pgn.MoveSummary] -> UTCTime -> [MoveEval]
@@ -283,8 +278,8 @@ evalToRowColor g n Board.Black (ms:rest) time =
   constructEvalMove g n False ms time : evalToRowColor g (n + 1) Board.White rest time
 
 constructEvalMove :: Key Game -> Int -> Bool -> Pgn.MoveSummary -> UTCTime -> MoveEval
-constructEvalMove gm n isWhite (Pgn.MoveSummary mv mvBest evalMove evalBest fen comp) time =
-  MoveEval gm n isWhite (Just mv) mvBest eval evalB mate mateB (Just comp) fen latestEngine time
+constructEvalMove gm n isWhite (Pgn.MoveSummary mv mvBest evalMove evalBest fen comp) =
+  MoveEval gm n isWhite (Just mv) mvBest eval evalB mate mateB (Just comp) fen latestEngine 
   where
     (eval, mate) = (evalInt evalMove, evalMate evalMove)
     (evalB, mateB) = (evalInt evalBest, evalMate evalBest)
@@ -337,7 +332,7 @@ deleteAtt = do
 storeAtt :: Int -> Int -> DataAction ()
 storeAtt start num = do
   games :: [Entity Game] <- selectList [] []
-  let g = take num $ drop start $ games
+  let g = take num $ drop start games
   mapM_ storeGameAttributes g
 
 inb :: String -> DataAction a -> IO a

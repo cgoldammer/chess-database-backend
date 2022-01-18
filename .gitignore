@@ -21,3 +21,7 @@ snaplets/site_key.txt
 snaplets/snaplets
 *.dump
 notes.md
+chess-backend.cabal
+error.txt
+log.txt
+
