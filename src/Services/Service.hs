@@ -78,8 +78,8 @@ import Control.Concurrent
   )
 import Control.Monad (liftM2, when, unless)
 import Control.Monad.IO.Class (MonadIO, liftIO)
-import Data.Map (toList)
-import Data.Maybe (fromMaybe, isJust, listToMaybe)
+import qualified Data.Map  as MP 
+import Data.Maybe (fromMaybe, isJust, listToMaybe, catMaybes)
 import Data.Proxy (Proxy(..))
 import Data.Time.Clock (getCurrentTime)
 import Servant (Server, serveSnap)
@@ -137,7 +137,7 @@ type ChessApi m =
   "players" :> Encoded DefaultSearchData :> Get '[JSON] [Entity Player] :<|> 
   "tournaments" :> Encoded DefaultSearchData :> Get '[JSON] [Entity Tournament] :<|>
   "databases" :> Get '[JSON] [Entity Database] :<|>
-  "databaseStats" :> Get '[JSON] [DBResult] :<|>
+  "databaseStats" :> Get '[JSON] [DBResultFull] :<|>
   "evalResults" :> Encoded GameRequestData :> Get '[JSON] [EvalResult] :<|>
   "moveSummary" :> Encoded GameRequestData :> Get '[JSON] [MoveSummary] :<|>
   "dataSummary" :> Encoded DefaultSearchData :> Get '[JSON] DataSummary :<|>
@@ -372,31 +372,50 @@ instance QueryForDB GameRequestData where
 instance QueryForDB Ids where
   getDB = idDB
 
-type DBQueryType = (Single Int, Single String, Single Int, Single Int, Single Int)
+type DBQueryType = (Single Int, Single Int, Single Int, Single Int)
 
 data DBResult = DBResult { 
   dbResultId :: Int
-, dbResultName :: String
 , dbResultGames :: Int
 , dbResultGamesEval :: Int
 , dbResultEvals :: Int
 } deriving (Generic)
 
+data DBResultFull = DBResultFull {
+  dbResultNumbers :: DBResult
+, dbResultDB :: Database
+} deriving (Generic)
+
 instance ToJSON DBResult where
   toJSON = genericToJSON defaultOptions { fieldLabelModifier = renameField "dbResult"}
 
-toDBResults :: DBQueryType -> DBResult
-toDBResults (Single id, Single name, Single numGames, Single numGamesEval, Single numEvals) =
-  DBResult id name numGames numGamesEval numEvals
+instance ToJSON DBResultFull where
+  toJSON = genericToJSON defaultOptions { fieldLabelModifier = renameField "dbResult"}
 
-getDatabaseStats :: Handler b (Service b) [DBResult]
+toDBResults :: DBQueryType -> DBResult
+toDBResults (Single id, Single numGames, Single numGamesEval, Single numEvals) =
+  DBResult id numGames numGamesEval numEvals
+
+combineMaybes :: Maybe a -> Maybe b -> (a -> b -> c) -> Maybe c
+combineMaybes (Just a) (Just b) f = Just (f a b)
+combineMaybes _ _ _ = Nothing
+
+getDatabaseStats :: Handler b (Service b) [DBResultFull]
 getDatabaseStats = do
   dbs <- getDatabases
   let dbKeys = fmap (dbKeyInt . entityKey) dbs
   let sub = substituteName "databases"
   let query = sub dbQuery dbKeys
+
   results :: [DBQueryType] <- runPersist $ rawSql query []
-  return $ fmap toDBResults results
+  let groupedResults :: MP.Map Int DBResult = MP.fromList $ fmap (\r -> (dbResultId r, r)) $ fmap toDBResults results
+  let groupedDBs :: MP.Map Int Database = MP.fromList $ fmap (\d -> ((dbKeyInt . entityKey ) d, entityVal d)) dbs
+
+  -- Todo: Use a merge strategy that is likely much more efficient
+  let combined = fmap (\i -> (MP.lookup i groupedResults, MP.lookup i groupedDBs)) dbKeys
+
+  let dbResultsFull = catMaybes $ fmap (\(a, b) -> combineMaybes a b DBResultFull) combined
+  return dbResultsFull
 
 
 newtype DefaultSearchData = DefaultSearchData { searchDB :: Int } deriving (Generic, FromJSON, ToJSON, Show)
@@ -532,7 +551,7 @@ gameEvaluations grd = do
   results <- runPersist $ rawSql (substituteGameList evalQueryTemplate gl) []
   let parsed = fmap parseEvalResults results
   let grouped = fmap (\(_, b, c) -> (b, c)) <$> groupWithVal (Lens.^._1) parsed
-  return $ toList grouped
+  return $ MP.toList grouped
 
 data UploadData = UploadData
   { uploadName :: String
@@ -751,7 +770,7 @@ data MoveLoss = MoveLossCP Int | MoveLossMate Int deriving (Show, Generic, ToJSO
 
 getEvalData :: [(Entity Game, Entity MoveEval)] -> [MoveEvaluationData]
 getEvalData dat = concat [evalGame game evals | (game, evals) <- grouped]
-  where grouped = toList $ fmap snd <$> groupWithVal fst dat :: [(Entity Game, [Entity MoveEval])]
+  where grouped = MP.toList $ fmap snd <$> groupWithVal fst dat :: [(Entity Game, [Entity MoveEval])]
 
 evalGame :: Entity Game -> [Entity MoveEval] -> [MoveEvaluationData]
 evalGame = fmap . evalHelper

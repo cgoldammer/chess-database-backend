@@ -68,7 +68,6 @@ dbQuery :: T.Text
 dbQuery = [r| 
 SELECT 
   db.id AS id
-, min(db.name) as database
 , count(distinct g.id) as games
 , count(distinct me.game_id) as games_evaluated
 , sum((me.id is not null)::Int) as number_evals

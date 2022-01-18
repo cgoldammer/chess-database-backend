@@ -97,15 +97,15 @@ testApi = Test.snap (route (App.routes True)) (App.app settings) $ beforeAll_ do
       Test.shouldEqual overlap 0
 
     it "the database stats functions returns the personal DB if logged in" $ do
-      overlap <- getDBResults S.getDatabaseStats nothingHandlerTest dbResultId
+      overlap <- getDBResults S.getDatabaseStats nothingHandlerTest (dbResultId . dbResultNumbers)
       Test.shouldEqual overlap 1
 
     it "the database stats functions does not return the personal DB if logged out" $ do
-      overlap <- getDBResults S.getDatabaseStats App.resetUser dbResultId
+      overlap <- getDBResults S.getDatabaseStats App.resetUser (dbResultId . dbResultNumbers)
       Test.shouldEqual overlap 0
 
     it "the database stats functions does not return the personal DB if logged in as another user" $ do
-      overlap <- getDBResults S.getDatabaseStats loginAsAnotherRandomUser dbResultId
+      overlap <- getDBResults S.getDatabaseStats loginAsAnotherRandomUser (dbResultId . dbResultNumbers)
       Test.shouldEqual overlap 0
 
     it "the eval averages are returned for every player" $ do
